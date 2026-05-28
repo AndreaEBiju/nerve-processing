@@ -55,6 +55,59 @@ class QtLogHandler(logging.Handler):
             pass
 
 
+class IntrospectWorker(QtCore.QObject):
+    """Reads variable metadata from one pair's files on a background thread.
+
+    Metadata-only reads (``whosmat`` / ``h5py``) are normally millisecond-fast,
+    but on cloud-backed storage (Google Drive File Stream, OneDrive, etc.) the
+    first ``open()`` can stall while the file is pulled down.  Running this
+    off the UI thread keeps the GUI responsive and lets the user cancel.
+    """
+
+    progress = QtCore.Signal(str)
+    finished = QtCore.Signal(dict)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, pair, cfg: PipelineConfig):
+        super().__init__()
+        self.pair = pair
+        self.cfg = cfg
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            self.progress.emit(f"Reading metadata: {self.pair.blanked_path.name}")
+            if self._cancel:
+                self.failed.emit("cancelled")
+                return
+            bvars = introspect_variables(self.pair.blanked_path)
+
+            self.progress.emit(f"Reading metadata: {self.pair.rpeak_path.name}")
+            if self._cancel:
+                self.failed.emit("cancelled")
+                return
+            rvars = introspect_variables(self.pair.rpeak_path)
+
+            svars = None
+            if self.pair.slowwave_path is not None:
+                self.progress.emit(f"Reading metadata: {self.pair.slowwave_path.name}")
+                if self._cancel:
+                    self.failed.emit("cancelled")
+                    return
+                svars = introspect_variables(self.pair.slowwave_path)
+
+            self.progress.emit("Autopopulating variable mapping")
+            vm = autopopulate_var_map(bvars, rvars, svars, fs_hint=self.cfg.fs)
+            self.finished.emit({"bvars": bvars, "rvars": rvars, "svars": svars, "vm": vm})
+        except Exception as e:
+            import traceback
+            self.failed.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
+
+
 class BatchWorker(QtCore.QObject):
     progress = QtCore.Signal(str, int, int)
     finished = QtCore.Signal(dict)
@@ -154,13 +207,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pair_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         layout.addWidget(self.pair_table, 1)
 
-        # Explicit button to re-introspect from a specific row.  Previously
-        # this was wired to ``itemSelectionChanged`` which fired twice per
-        # discovery (and on programmatic changes), triggering redundant file
-        # reads.
+        # Explicit button to re-introspect from a specific row, plus a
+        # cancel button (live only while introspection is running) and a
+        # toggle that lets cloud-storage users skip the automatic
+        # introspect-on-discovery step entirely.
+        row_layout = QtWidgets.QHBoxLayout()
         row_btn = QtWidgets.QPushButton("Introspect from selected row")
         row_btn.clicked.connect(self._introspect_from_selection)
-        layout.addWidget(row_btn)
+        row_layout.addWidget(row_btn)
+        self.btn_cancel_introspect = QtWidgets.QPushButton("Cancel introspect")
+        self.btn_cancel_introspect.setEnabled(False)
+        self.btn_cancel_introspect.clicked.connect(self._cancel_introspect)
+        row_layout.addWidget(self.btn_cancel_introspect)
+        self.chk_auto_introspect = QtWidgets.QCheckBox("Auto-introspect on discovery")
+        self.chk_auto_introspect.setChecked(True)
+        self.chk_auto_introspect.setToolTip(
+            "Turn off if the batch root is on slow / cloud storage and "
+            "the first variable read takes too long.  You can still trigger "
+            "introspection manually with the button above."
+        )
+        row_layout.addWidget(self.chk_auto_introspect)
+        row_layout.addStretch()
+        layout.addLayout(row_layout)
 
         # --- Variable mapping panel
         vm_box = QtWidgets.QGroupBox("Variable mapping")
@@ -292,17 +360,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pair_table.setItem(i, 4, status_item)
         log.info("Discovered %d pair(s).", len(self.pairs))
         # Auto-introspect the first pair so the variable dropdowns populate
-        # immediately.  Introspection uses metadata-only reads (whosmat /
-        # h5py) so it stays fast even on multi-GB .mat files.  Errors are
-        # logged but don't block the discovery flow.
-        if self.pairs:
-            QtCore.QTimer.singleShot(0, lambda: self._safe_introspect(0))
-
-    def _safe_introspect(self, pair_index: int) -> None:
-        try:
-            self._introspect(pair_index=pair_index)
-        except Exception as e:
-            log.error("Auto-introspect failed: %s", e)
+        # without a second click.  Runs on a worker thread (cloud-storage
+        # files can stall on open) and is opt-out via the checkbox.
+        if self.pairs and self.chk_auto_introspect.isChecked():
+            self._introspect(pair_index=0)
 
     def _introspect_from_selection(self) -> None:
         """Re-introspect from the row the user has currently selected."""
@@ -318,28 +379,59 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.pairs:
             QtWidgets.QMessageBox.warning(self, "Discover first", "Run discovery first.")
             return
+        if getattr(self, "_introspect_thread", None) and self._introspect_thread.isRunning():
+            log.warning("Introspection already in progress; ignoring new request.")
+            return
         if pair_index >= len(self.pairs):
             pair_index = 0
         rep = self.pairs[pair_index]
-        try:
-            log.info("Introspecting variables from pair #%d:", pair_index + 1)
-            log.info("  blanked  : %s", rep.blanked_path.name)
-            log.info("  rpeak    : %s", rep.rpeak_path.name)
-            if rep.slowwave_path:
-                log.info("  slowwave : %s", rep.slowwave_path.name)
-            bvars = introspect_variables(rep.blanked_path)
-            rvars = introspect_variables(rep.rpeak_path)
-            svars = introspect_variables(rep.slowwave_path) if rep.slowwave_path else None
-            log.info(
-                "  found %d blanked / %d rpeak / %d slow-wave variable(s).",
-                len(bvars), len(rvars), len(svars) if svars else 0,
-            )
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Introspection error", f"{type(e).__name__}: {e}")
-            log.error("Introspection error: %s", e)
-            return
+        log.info("Introspecting variables from pair #%d:", pair_index + 1)
+        log.info("  blanked  : %s", rep.blanked_path.name)
+        log.info("  rpeak    : %s", rep.rpeak_path.name)
+        if rep.slowwave_path:
+            log.info("  slowwave : %s", rep.slowwave_path.name)
 
-        vm = autopopulate_var_map(bvars, rvars, svars, fs_hint=self.cfg.fs)
+        self.btn_cancel_introspect.setEnabled(True)
+        self._introspect_worker = IntrospectWorker(rep, self.cfg)
+        self._introspect_thread = QtCore.QThread(self)
+        self._introspect_worker.moveToThread(self._introspect_thread)
+        self._introspect_thread.started.connect(self._introspect_worker.run)
+        self._introspect_worker.progress.connect(lambda msg: log.info(msg))
+        self._introspect_worker.finished.connect(self._on_introspect_finished)
+        self._introspect_worker.failed.connect(self._on_introspect_failed)
+        self._introspect_worker.finished.connect(self._introspect_thread.quit)
+        self._introspect_worker.failed.connect(self._introspect_thread.quit)
+        self._introspect_thread.start()
+
+    def _cancel_introspect(self) -> None:
+        worker = getattr(self, "_introspect_worker", None)
+        if worker is not None:
+            worker.cancel()
+            log.info("Introspect cancel requested.")
+
+    @QtCore.Slot(dict)
+    def _on_introspect_finished(self, result: dict) -> None:
+        self.btn_cancel_introspect.setEnabled(False)
+        bvars = result["bvars"]
+        rvars = result["rvars"]
+        svars = result.get("svars")
+        vm = result["vm"]
+        log.info(
+            "  found %d blanked / %d rpeak / %d slow-wave variable(s).",
+            len(bvars), len(rvars), len(svars) if svars else 0,
+        )
+        self._apply_introspection(bvars, rvars, svars, vm)
+
+    @QtCore.Slot(str)
+    def _on_introspect_failed(self, msg: str) -> None:
+        self.btn_cancel_introspect.setEnabled(False)
+        if msg == "cancelled":
+            log.info("Introspect cancelled.")
+            return
+        log.error("Introspect failed: %s", msg)
+        QtWidgets.QMessageBox.critical(self, "Introspection error", msg[:2000])
+
+    def _apply_introspection(self, bvars, rvars, svars, vm) -> None:
 
         # populate dropdowns
         def fill(combo: QtWidgets.QComboBox, options: list[str], current: str | None) -> None:
@@ -357,7 +449,8 @@ class MainWindow(QtWidgets.QMainWindow):
         fill(self.vm_stim_labels, list(bvars.keys()), vm.stim_labels)
         self.vm_units.setCurrentText(vm.rpeak_units)
         self.vm_n_channels.setValue(max(vm.n_channels, 1))
-        log.info("Autopopulated variable mapping from %s.", rep.blanked_path.name)
+        log.info("Autopopulated variable mapping (%d / %d / %d vars).",
+                 len(bvars), len(rvars), len(svars) if svars else 0)
 
     def _reuse_varmap(self) -> None:
         root = self.root_edit.text().strip()
