@@ -238,6 +238,53 @@ def test_determinism(sample_dataset):
         assert m1 == m2
 
 
+def test_prepass_then_resume_matches_full(sample_dataset, batch_result):
+    """Prepass on this machine + resume on this machine should produce the
+    same per-pair cluster count and mean SNR as a full-mode run.
+
+    Mirrors the cross-machine workflow: a Windows box (no MountainSort5)
+    runs prepass, ships checkpoints to a Mac, which resumes.
+    """
+    import shutil
+    from vagus_pipeline.batch import run_batch
+    from vagus_pipeline.checkpoint import CHECKPOINT_SUFFIX
+
+    cfg = batch_result["cfg"]
+    vm = batch_result["var_map"]
+    full_rows = batch_result["result"]["rows"]
+
+    # Strip every output from the full run so resume mode discovers
+    # checkpoints only.  Skip macOS AppleDouble (._*) sidecars.
+    for ext in ("_metrics.mat", CHECKPOINT_SUFFIX):
+        for p in DATA_DIR.rglob(f"*{ext}"):
+            if p.name.startswith("."):
+                continue
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+
+    pre_res = run_batch(DATA_DIR, vm, cfg, mode="prepass")
+    assert all(r["status"] == "ok" for r in pre_res["rows"]), pre_res["rows"]
+    # Checkpoint file exists for every pair
+    cks = sorted(p for p in DATA_DIR.rglob(f"*{CHECKPOINT_SUFFIX}") if not p.name.startswith("."))
+    assert len(cks) == len(pre_res["rows"])
+
+    resume_res = run_batch(DATA_DIR, vm, cfg, mode="resume")
+    assert all(r["status"] == "ok" for r in resume_res["rows"]), resume_res["rows"]
+    assert len(resume_res["rows"]) == len(full_rows)
+
+    # Match clusters + SNR between full and resume (same MS5 input, same
+    # PCA basis -> identical sorter result; SNR is computed deterministically).
+    for full_row, resume_row in zip(
+        sorted(full_rows, key=lambda r: r["dir"]),
+        sorted(resume_res["rows"], key=lambda r: r["dir"]),
+    ):
+        assert full_row["n_clusters_total"] == resume_row["n_clusters_total"], (full_row, resume_row)
+        if np.isfinite(full_row["mean_snr"]):
+            assert abs(full_row["mean_snr"] - resume_row["mean_snr"]) < 0.5, (full_row, resume_row)
+
+
 def test_provenance_roundtrip(batch_result):
     for row in batch_result["result"]["rows"]:
         data = _load_mat(row["output_path"])

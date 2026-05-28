@@ -28,6 +28,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Vagus nerve cuff recording pipeline")
     parser.add_argument("--no-ui", action="store_true", help="Run headless instead of launching the GUI")
     parser.add_argument("--smoke", action="store_true", help="Regenerate sample data, run the end-to-end test, and exit")
+    parser.add_argument(
+        "--mode",
+        choices=("full", "prepass", "resume"),
+        default="full",
+        help=(
+            "full: run all 14 steps and save .mat per pair (default). "
+            "prepass: run Steps 1-5 + save <stem>_checkpoint.npz per pair; "
+            "no sorting, no .mat output -- use on machines without "
+            "MountainSort5. "
+            "resume: skip discovery, scan for existing checkpoints, run "
+            "Steps 6-14 from each one, save .mat next to the checkpoint."
+        ),
+    )
+    parser.add_argument("--prepass", action="store_true", help="Shortcut for --mode prepass.")
+    parser.add_argument("--resume", action="store_true", help="Shortcut for --mode resume.")
     parser.add_argument("--root", type=Path, help="Batch root directory (headless)")
     parser.add_argument("--neural", help="Neural variable name")
     parser.add_argument("--rpeak", help="R-peak variable name")
@@ -79,8 +94,16 @@ def main(argv: list[str] | None = None) -> int:
         from vagus_pipeline.ui import launch
         return launch()
 
-    if not args.root or not args.neural or not args.rpeak:
-        parser.error("--no-ui requires --root, --neural, --rpeak")
+    is_resume = args.resume or args.mode == "resume"
+    if not args.root:
+        parser.error("--no-ui requires --root")
+    if not is_resume and (not args.neural or not args.rpeak):
+        parser.error("--no-ui (full/prepass) requires --neural and --rpeak")
+    if is_resume:
+        # Resume reads everything from the checkpoint; supply harmless
+        # placeholders so VarMap() construction below doesn't crash.
+        args.neural = args.neural or "<from-checkpoint>"
+        args.rpeak = args.rpeak or "<from-checkpoint>"
 
     cfg = PipelineConfig()
     for name in ("bp_low_hz", "bp_high_hz", "threshold_sigma", "n_pca", "rate_bin_s", "seed"):
@@ -114,6 +137,11 @@ def main(argv: list[str] | None = None) -> int:
     slowwave_token = args.slowwave_token if args.slowwave_token is not None else DEFAULT_SLOWWAVE_TOKEN
     if slowwave_token == "":
         slowwave_token = None
+    mode = args.mode
+    if args.prepass:
+        mode = "prepass"
+    if args.resume:
+        mode = "resume"
     res = run_batch(
         args.root, var_map, cfg,
         blanked_patterns=args.blanked_pattern,
@@ -123,8 +151,9 @@ def main(argv: list[str] | None = None) -> int:
         blanked_token=blanked_token,
         rpeak_token=rpeak_token,
         slowwave_token=slowwave_token,
+        mode=mode,
     )
-    print("Done. Summary:", res["summary_path"])
+    print(f"Done ({mode}). Summary:", res["summary_path"])
     return 0
 
 

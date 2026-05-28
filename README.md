@@ -21,6 +21,63 @@ do **not** touch any global Python; your system Python keeps whatever
 version it already had. If 3.12 isn't installed, the scripts error out with
 install instructions instead of silently using the wrong version.
 
+### Split-machine workflow: prepass on Windows, MountainSort5 on Mac
+
+The 14-step pipeline can be split across two machines so that the
+cluster-heavy MountainSort5 step runs on a Mac/Linux box that has the
+sorter installed, while a Windows box does the bulk preprocessing.
+
+The split point is at Step 5/6.  Steps 1-5 are deterministic
+preprocessing (bandpass, sigma, detection, waveforms, PCA features).
+Step 6 is the MountainSort5 sort.  Steps 7-14 are downstream metrics
+that need the sort labels.
+
+```
+Windows (prepass)                Google Drive                 Mac (resume)
+-----------------                ------------                 ------------
+discover pairs                                                discover *_checkpoint.npz
+fit global PCA basis  ----->     batch_pca_basis.npz   ----> load PCA basis
+per pair:                        <stem>_checkpoint.npz ----> per checkpoint:
+  Steps 1-5                                                    Steps 6-14
+  save checkpoint                                              save <stem>_metrics.mat
+```
+
+CLI:
+
+```bash
+# Step 1: on Windows, run prepass
+python run.py --no-ui --mode prepass --root "C:\path\to\batch" \
+    --neural data --rpeak rpeak_samples --slowwave slow_wave
+
+# Step 2: copy <stem>_checkpoint.npz files (one at a time if your Mac
+# storage is limited) plus batch_pca_basis.npz to the Mac
+
+# Step 3: on Mac, run resume (no --neural / --rpeak needed -- the
+# checkpoint already has the data)
+python run.py --no-ui --mode resume --root /path/to/local/copies
+```
+
+In the GUI, pick the run mode from the dropdown next to the **Run batch**
+button (`full` / `prepass` / `resume`).
+
+Output identity: a prepass-then-resume run produces the same cluster
+labels and the same per-cluster SNR as a single full-mode run, because
+the global PCA basis is shared and the sort is deterministic.  This is
+asserted by `tests/test_end_to_end.py::test_prepass_then_resume_matches_full`.
+
+Checkpoint file size is dominated by the per-cuff filtered signal
+(needed by MountainSort5).  Approximately:
+
+| Recording length | Per-cuff checkpoint | Per-pair (2 cuffs) |
+| --- | --- | --- |
+| 2 min | ~5 MB | ~10 MB |
+| 30 min | ~80-150 MB | ~150-300 MB |
+| 60 min | ~150-300 MB | ~300-600 MB |
+
+You can therefore select **one checkpoint at a time** from Google Drive
+to bring across to your Mac, run resume on just that file, then move to
+the next one -- never having to hold the full batch on the Mac at once.
+
 ### Optional dependency: MountainSort5
 
 `mountainsort5` is the canonical sorter but its C++ dependency `isosplit6`

@@ -114,13 +114,15 @@ class BatchWorker(QtCore.QObject):
     failed = QtCore.Signal(str)
 
     def __init__(self, root: Path, var_map: VarMap, cfg: PipelineConfig,
-                 patterns: dict[str, list[str]], signature: dict[str, str | None]):
+                 patterns: dict[str, list[str]], signature: dict[str, str | None],
+                 mode: str = "full"):
         super().__init__()
         self.root = root
         self.var_map = var_map
         self.cfg = cfg
         self.patterns = patterns
         self.signature = signature
+        self.mode = mode
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -135,6 +137,8 @@ class BatchWorker(QtCore.QObject):
                 required_regex=self.signature.get("required_regex"),
                 blanked_token=self.signature.get("blanked_token"),
                 rpeak_token=self.signature.get("rpeak_token"),
+                slowwave_token=self.signature.get("slowwave_token"),
+                mode=self.mode,
                 progress_cb=lambda phase, i, n: self.progress.emit(phase, i, n),
             )
             self.finished.emit(res)
@@ -274,8 +278,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cfg_widgets[name] = w
         layout.addWidget(cfg_box)
 
-        # --- Run + log
+        # --- Run mode + log
         run_row = QtWidgets.QHBoxLayout()
+        run_row.addWidget(QtWidgets.QLabel("Mode:"))
+        self.cmb_mode = QtWidgets.QComboBox()
+        self.cmb_mode.addItems(["full", "prepass", "resume"])
+        self.cmb_mode.setToolTip(
+            "full    -- run all 14 steps and save .mat per pair (default).\n"
+            "prepass -- run Steps 1-5 + write <stem>_checkpoint.npz per pair.\n"
+            "           Use on machines without MountainSort5 (Windows).\n"
+            "resume  -- skip discovery, scan for existing checkpoints,\n"
+            "           run Steps 6-14 from each. Use on a Mac/Linux box\n"
+            "           after copying checkpoints across."
+        )
+        run_row.addWidget(self.cmb_mode)
         self.btn_run = QtWidgets.QPushButton("Run batch")
         self.btn_run.clicked.connect(self._run_batch)
         run_row.addWidget(self.btn_run)
@@ -533,7 +549,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.progress.setValue(0)
         self.progress.setMaximum(0)  # busy
 
-        self.worker = BatchWorker(Path(root), vm, cfg, self._patterns(), self._signature())
+        self.worker = BatchWorker(
+            Path(root), vm, cfg, self._patterns(), self._signature(),
+            mode=self.cmb_mode.currentText(),
+        )
         self.thread = QtCore.QThread()
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)

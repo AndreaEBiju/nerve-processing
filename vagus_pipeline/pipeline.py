@@ -30,31 +30,58 @@ from .sort import run_mountainsort
 log = logging.getLogger("vagus.pipeline")
 
 
-def run_pipeline_on_cuff(
+def run_prepass_on_cuff(
     neural: np.ndarray,
     blanked_mask: np.ndarray | None,
+    pca_basis: PCABasis,
+    cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """Steps 1-5: bandpass, sigma track, spike detection, waveform extraction,
+    scalar features + PCA projection.  Returns the dict consumed by
+    :func:`run_postpass_on_cuff` and persisted by :mod:`checkpoint`.
+    """
+    filtered = bandpass(neural, cfg)
+    sigma_track, sigma_times = noise_sigma(filtered, cfg, blanked_mask)
+    spikes = detect_spikes(filtered, sigma_track, sigma_times, blanked_mask, cfg)
+    waveforms, spikes = extract_waveforms(filtered, spikes, cfg)
+    amp_hist = amplitude_histogram(filtered, spikes)
+    scalars = scalar_features(waveforms, cfg)
+    pca_feats = project_pca(waveforms, pca_basis)
+    return {
+        "filtered": filtered,
+        "sigma_track": sigma_track,
+        "sigma_times": sigma_times,
+        "spike_samples": spikes,
+        "waveforms": waveforms,
+        "amp_hist": amp_hist,
+        "scalar_feats": scalars,
+        "pca_feats": pca_feats,
+    }
+
+
+def run_postpass_on_cuff(
+    prepass: dict[str, Any],
+    n_samples: int,
     rpeak_samples: np.ndarray,
     slowwave: np.ndarray | None,
     stim_events: list[tuple[int, str]] | None,
     fs: float,
-    pca_basis: PCABasis,
     cfg: PipelineConfig,
 ) -> dict[str, Any]:
-    """Run Steps 1–14 on a single cuff trace. Returns the nested results dict."""
-    duration_s = neural.size / fs
+    """Steps 6-14, given a prepass result dict.  Builds the same nested
+    results structure :func:`run_pipeline_on_cuff` does, including step1-5
+    metadata so the .mat output looks identical no matter which mode ran.
+    """
+    duration_s = n_samples / fs
+    filtered = prepass["filtered"]
+    sigma_track = prepass["sigma_track"]
+    sigma_times = prepass["sigma_times"]
+    spikes = prepass["spike_samples"]
+    waveforms = prepass["waveforms"]
+    scalars = prepass["scalar_feats"]
+    pca_feats = prepass["pca_feats"]
+    amp_hist = prepass["amp_hist"]
 
-    # Step 1
-    filtered = bandpass(neural, cfg)
-    # Step 2
-    sigma_track, sigma_times = noise_sigma(filtered, cfg, blanked_mask)
-    # Step 3
-    spikes = detect_spikes(filtered, sigma_track, sigma_times, blanked_mask, cfg)
-    # Step 4
-    waveforms, spikes = extract_waveforms(filtered, spikes, cfg)
-    amp_hist = amplitude_histogram(filtered, spikes)
-    # Step 5
-    scalars = scalar_features(waveforms, cfg)
-    pca_feats = project_pca(waveforms, pca_basis)
     # Step 6
     labels, sorter_name = run_mountainsort(filtered, spikes, waveforms, pca_feats, cfg)
     # Step 7
@@ -73,15 +100,15 @@ def run_pipeline_on_cuff(
         ds_labels = labels
 
     # Step 10 (respiratory verification)
-    resp_surr = resp_surrogate_from_rpeaks(rpeak_samples, neural.size, fs, cfg)
+    resp_surr = resp_surrogate_from_rpeaks(rpeak_samples, n_samples, fs, cfg)
     resp = resp_verify(ds_samples, ds_labels, resp_surr, stim_events, fs, cfg)
     # HR surrogate for correlations: same RR-interpolated signal but pre-bandpass
-    hr_signal = _instantaneous_hr_full(rpeak_samples, neural.size, fs)
+    hr_signal = _instantaneous_hr_full(rpeak_samples, n_samples, fs)
     # Step 11
     sw = phase_tag(ds_samples, ds_labels, slowwave, fs, cfg)
     # Step 12
     rates = firing_rates(
-        ds_samples, ds_labels, neural.size, fs, resp_surr, hr_signal, slowwave, cfg
+        ds_samples, ds_labels, n_samples, fs, resp_surr, hr_signal, slowwave, cfg
     )
     # Step 13
     responder = responder_detect(
@@ -136,6 +163,30 @@ def run_pipeline_on_cuff(
         "step13": {"cluster": responder},
         "step14": {"cluster": fibertypes},
     }
+
+
+def run_pipeline_on_cuff(
+    neural: np.ndarray,
+    blanked_mask: np.ndarray | None,
+    rpeak_samples: np.ndarray,
+    slowwave: np.ndarray | None,
+    stim_events: list[tuple[int, str]] | None,
+    fs: float,
+    pca_basis: PCABasis,
+    cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """Convenience wrapper that runs prepass + postpass back-to-back, the
+    same all-in-one entry point earlier callers used."""
+    prepass = run_prepass_on_cuff(neural, blanked_mask, pca_basis, cfg)
+    return run_postpass_on_cuff(
+        prepass=prepass,
+        n_samples=neural.size,
+        rpeak_samples=rpeak_samples,
+        slowwave=slowwave,
+        stim_events=stim_events,
+        fs=fs,
+        cfg=cfg,
+    )
 
 
 def _instantaneous_hr_full(rpeak_samples: np.ndarray, n_samples: int, fs: float) -> np.ndarray | None:
