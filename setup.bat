@@ -1,55 +1,82 @@
 @echo off
-REM Bootstrap a virtualenv for the vagus nerve cuff pipeline (Windows cmd.exe).
+REM Bootstrap a Python 3.12 virtualenv for the vagus nerve cuff pipeline.
+REM
+REM The required Python version is pinned in .python-version and enforced
+REM here.  Set PY=... to force a specific interpreter (it must still
+REM report Python 3.12.x).
 REM
 REM Usage (from cmd.exe, in the repo root):
 REM   setup.bat
-REM   set PY=py -3.11 && setup.bat
+REM   set PY=C:\Python312\python.exe && setup.bat
 REM   set VENV_DIR=C:\venvs\nerve && setup.bat
-REM
-REM Unlike setup.ps1, this script does not need PowerShell at all and does
-REM not touch PowerShell's execution policy.  Use this one if PowerShell
-REM complains about "running scripts is disabled on this system".
 
-setlocal
+setlocal enabledelayedexpansion
+set "REQUIRED=3.12"
 
 if "%VENV_DIR%"=="" set "VENV_DIR=.venv"
 
-REM Pick an interpreter: honor %PY% if already set, else py launcher, else python, else python3.
-if not "%PY%"=="" goto :have_py
+REM --- Resolve a Python 3.12 interpreter --------------------------------------
+if not "%PY%"=="" goto :check_py
 
+REM Try py launcher with -3.12 selector
 where py >nul 2>&1
 if not errorlevel 1 (
-    set "PY=py -3"
-    goto :have_py
+    py -%REQUIRED% -c "import sys" >nul 2>&1
+    if not errorlevel 1 (
+        set "PY=py -%REQUIRED%"
+        goto :check_py
+    )
 )
 
+REM Try python3.12 directly
+where python%REQUIRED% >nul 2>&1
+if not errorlevel 1 (
+    set "PY=python%REQUIRED%"
+    goto :check_py
+)
+
+REM Last-resort fall-back: whatever ``python`` happens to be on PATH; the
+REM version check below will reject it if it's not 3.12.
 where python >nul 2>&1
 if not errorlevel 1 (
     set "PY=python"
-    goto :have_py
+    goto :check_py
 )
 
-where python3 >nul 2>&1
-if not errorlevel 1 (
-    set "PY=python3"
-    goto :have_py
-)
-
-echo Error: Could not find a Python interpreter on PATH (tried py, python, python3).
-echo Install Python 3.10+ from https://www.python.org/downloads/windows/ and re-run.
+echo Error: Python %REQUIRED% is required but was not found on PATH.
+echo Install it from:
+echo   python.org:        https://www.python.org/downloads/release/python-3120/
+echo   Microsoft Store:   search "Python 3.12"
+echo   winget:            winget install Python.Python.3.12
+echo Or point this script at an existing interpreter:
+echo   set PY=C:\path\to\python3.12.exe ^&^& setup.bat
 exit /b 1
 
-:have_py
+:check_py
+for /f "delims=" %%v in ('%PY% -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2^>nul') do set "PY_VER=%%v"
+if not "%PY_VER%"=="%REQUIRED%" (
+    echo Error: %PY% reports Python %PY_VER%, need exactly %REQUIRED%.
+    echo Install Python %REQUIRED% or set PY to a 3.12 interpreter.
+    exit /b 1
+)
+echo ^>^>^> Using Python %REQUIRED% via %PY%
 
-if not exist "%VENV_DIR%" (
-    echo ^>^>^> Creating venv at %VENV_DIR% using %PY%
+REM --- Create / re-use venv ---------------------------------------------------
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    for /f "delims=" %%v in ('"%VENV_DIR%\Scripts\python.exe" -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2^>nul') do set "EXISTING_VER=%%v"
+    if not "!EXISTING_VER!"=="%REQUIRED%" (
+        echo Error: Existing venv at %VENV_DIR% is Python !EXISTING_VER!, expected %REQUIRED%.
+        echo Delete it and re-run, or set VENV_DIR to a different path.
+        exit /b 1
+    )
+    echo ^>^>^> Re-using existing venv at %VENV_DIR%
+) else (
+    echo ^>^>^> Creating venv at %VENV_DIR%
     %PY% -m venv "%VENV_DIR%"
     if errorlevel 1 (
         echo Error: venv creation failed.
         exit /b 1
     )
-) else (
-    echo ^>^>^> Re-using existing venv at %VENV_DIR%
 )
 
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
@@ -60,17 +87,11 @@ if not exist "%VENV_PY%" (
 
 echo ^>^>^> Upgrading pip / wheel
 "%VENV_PY%" -m pip install --quiet --upgrade pip wheel
-if errorlevel 1 (
-    echo Error: pip upgrade failed.
-    exit /b 1
-)
+if errorlevel 1 exit /b 1
 
 echo ^>^>^> Installing requirements (this can take several minutes the first time)
 "%VENV_PY%" -m pip install -r requirements.txt
-if errorlevel 1 (
-    echo Error: requirements install failed.
-    exit /b 1
-)
+if errorlevel 1 exit /b 1
 
 echo.
 echo ^>^>^> Done.  Activate this venv in new shells with:

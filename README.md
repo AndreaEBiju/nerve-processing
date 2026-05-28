@@ -15,6 +15,18 @@ The pipeline depends on a fairly heavy scientific stack (numpy, scipy, sklearn,
 spikeinterface + mountainsort5, PySide6, umap, hdbscan, etc.). Keep it isolated
 from your system Python in a virtualenv.
 
+**Python version is pinned to 3.12** (see `.python-version`). The setup
+scripts find Python 3.12 on your system and create the venv from it — they
+do **not** touch any global Python; your system Python keeps whatever
+version it already had. If 3.12 isn't installed, the scripts error out with
+install instructions instead of silently using the wrong version.
+
+| OS | One-liner to install Python 3.12 (only if missing) |
+| --- | --- |
+| macOS | `brew install python@3.12` (or `pyenv install 3.12 && pyenv local 3.12`) |
+| Windows | `winget install Python.Python.3.12` (or [python.org installer](https://www.python.org/downloads/release/python-3120/)) |
+| Ubuntu / Debian | `sudo apt install python3.12 python3.12-venv` |
+
 ### macOS / Linux
 
 ```bash

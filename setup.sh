@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Bootstrap a virtualenv for the vagus nerve cuff pipeline.
+# Bootstrap a Python 3.12 virtualenv for the vagus nerve cuff pipeline.
+#
+# The required Python version is pinned in .python-version and enforced
+# here so the venv is reproducible across machines.  Set PY=... to force
+# a specific interpreter (it must still report Python 3.12.x).
 #
 # Why the venv lives outside the repo by default
 # ----------------------------------------------
@@ -11,34 +15,79 @@
 # main APFS disk side-steps the problem entirely.
 #
 # Usage:
-#   ./setup.sh                       # creates ~/.venvs/<repo>, symlinks .venv -> there
-#   VENV_DIR=.venv ./setup.sh        # force the venv inside the repo (APFS/ext4 only)
+#   ./setup.sh                       # auto-finds python3.12, creates venv
+#   PY=/path/to/python3.12 ./setup.sh
+#   VENV_DIR=.venv ./setup.sh        # force the venv inside the repo
 #   VENV_DIR=/abs/path ./setup.sh    # any absolute path
-#   PY=python3.11 ./setup.sh         # override the interpreter
-#
-# Re-running is safe: pip reuses the existing venv and only installs what's
-# missing / outdated.
 
 set -euo pipefail
 
-PY="${PY:-python3}"
+REQUIRED="3.12"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_NAME="$(basename "$REPO_DIR")"
 DEFAULT_VENV="$HOME/.venvs/${REPO_NAME// /-}"
 VENV_DIR="${VENV_DIR:-$DEFAULT_VENV}"
+PY="${PY:-}"
 
-mkdir -p "$(dirname "$VENV_DIR")"
+# --- Resolve a Python 3.12 interpreter ---------------------------------------
+py_version() {
+    "$1" -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo ""
+}
 
-if [[ ! -d "$VENV_DIR" ]]; then
-    echo ">>> Creating venv at $VENV_DIR (using $PY)"
-    "$PY" -m venv "$VENV_DIR"
-else
-    echo ">>> Re-using existing venv at $VENV_DIR"
+if [[ -z "$PY" ]]; then
+    for cand in "python${REQUIRED}" "python3" "python"; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            if [[ "$(py_version "$cand")" == "$REQUIRED" ]]; then
+                PY="$cand"
+                break
+            fi
+        fi
+    done
 fi
 
-# Make ./.venv inside the repo point at the real venv so editors and the
-# usual ``source .venv/bin/activate`` muscle memory still work.  Skip if the
-# user asked for an in-repo venv to begin with.
+if [[ -z "$PY" ]]; then
+    cat >&2 <<EOF
+Error: Python ${REQUIRED} is required but was not found on PATH.
+
+Install it (one of):
+  macOS (Homebrew):   brew install python@${REQUIRED}
+  macOS (pyenv):      pyenv install ${REQUIRED} && pyenv local ${REQUIRED}
+  Ubuntu / Debian:    sudo apt install python${REQUIRED} python${REQUIRED}-venv
+  python.org:         https://www.python.org/downloads/release/python-3120/
+
+If you already have it under a non-standard name, point this script at it:
+  PY=/full/path/to/python3.12 ./setup.sh
+EOF
+    exit 1
+fi
+
+actual="$(py_version "$PY")"
+if [[ "$actual" != "$REQUIRED" ]]; then
+    echo "Error: PY=$PY reports Python $actual, need exactly $REQUIRED." >&2
+    exit 1
+fi
+
+PY_FULL="$(command -v "$PY")"
+echo ">>> Using Python $REQUIRED at $PY_FULL"
+
+# --- Create / re-use venv ----------------------------------------------------
+mkdir -p "$(dirname "$VENV_DIR")"
+
+if [[ -d "$VENV_DIR" ]]; then
+    existing="$(py_version "$VENV_DIR/bin/python")"
+    if [[ "$existing" != "$REQUIRED" ]]; then
+        echo "!!! Existing venv at $VENV_DIR is Python $existing, expected $REQUIRED." >&2
+        echo "!!! Delete it and re-run, or set VENV_DIR to a different path." >&2
+        exit 1
+    fi
+    echo ">>> Re-using existing venv at $VENV_DIR"
+else
+    echo ">>> Creating venv at $VENV_DIR"
+    "$PY" -m venv "$VENV_DIR"
+fi
+
+# Symlink ./.venv -> $VENV_DIR so editors and ``source .venv/bin/activate``
+# still work even when the real venv lives outside the repo.
 if [[ "$VENV_DIR" != "$REPO_DIR/.venv" ]]; then
     ln -sfn "$VENV_DIR" "$REPO_DIR/.venv"
     echo ">>> Symlinked $REPO_DIR/.venv -> $VENV_DIR"
