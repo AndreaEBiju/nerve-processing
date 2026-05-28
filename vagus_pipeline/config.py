@@ -92,8 +92,12 @@ class PipelineConfig:
     burst_peak_z_threshold: float = 3.0
     burst_direction_min_lag_s: float = 0.5
 
-    # Step 12 rates
-    rate_bin_s: float = 2.0
+    # Step 13 rates: 1 s bin gives twice the temporal resolution of the
+    # original 2 s default for only a sqrt(2) Poisson-noise penalty per bin.
+    # Critical for Step 14 (responder), where the pre/post-stim percentile
+    # test gets noticeably tighter estimates with 30 vs 15 bins in a 30 s
+    # window.  Override with --rate-bin-s on the CLI or the GUI spinbox.
+    rate_bin_s: float = 1.0
 
     # Step 13 responder
     responder_pctile: float = 95.0
