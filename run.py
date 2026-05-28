@@ -48,6 +48,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rpeak", help="R-peak variable name")
     parser.add_argument("--units", default="sample", choices=["sample", "sec", "ms"])
     parser.add_argument("--n-channels", dest="n_channels", type=int, default=1)
+    parser.add_argument(
+        "--channels",
+        dest="channels",
+        default=None,
+        help=(
+            "Comma-separated 0-based indices of the channels in the neural "
+            "array that are nerve cuffs.  Example: --channels 0,3 picks "
+            "rows 0 and 3 out of a 5-channel array.  Leave unset to use "
+            "every channel."
+        ),
+    )
     parser.add_argument("--slowwave", default=None)
     parser.add_argument("--fs-var", dest="fs_var", default=None)
     parser.add_argument("--stim-events", dest="stim_events", default=None)
@@ -108,6 +119,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg = PipelineConfig()
     for name in ("bp_low_hz", "bp_high_hz", "threshold_sigma", "n_pca", "rate_bin_s", "seed"):
         setattr(cfg, name, getattr(args, name))
+    channel_indices = None
+    if args.channels:
+        try:
+            channel_indices = [int(s.strip()) for s in args.channels.split(",") if s.strip()]
+        except ValueError:
+            parser.error(f"--channels {args.channels!r} must be a comma-separated list of integers (e.g. 0,3)")
     var_map = VarMap(
         neural=args.neural,
         rpeak_times=args.rpeak,
@@ -117,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         stim_events=args.stim_events,
         stim_labels=args.stim_labels,
         n_channels=args.n_channels,
+        channel_indices=channel_indices,
     )
     from vagus_pipeline.batch import run_batch
     from vagus_pipeline.io_discovery import (

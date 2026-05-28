@@ -81,7 +81,14 @@ class VarMap:
     fs: str | None = None
     stim_events: str | None = None
     stim_labels: str | None = None
-    n_channels: int = 1  # cuffs in the neural variable
+    n_channels: int = 1  # informational; if channel_indices is set it takes precedence
+
+    # 0-based indices of the channels in the neural array that are actual
+    # nerve-cuff recordings.  Example: a 5-channel acquisition where only
+    # rows 0 and 3 are cuff signals -> channel_indices=[0, 3].  When set,
+    # the pipeline runs once per listed channel and ignores the rest.
+    # Leave as ``None`` (or empty list) to use every channel in the array.
+    channel_indices: list[int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

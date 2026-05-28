@@ -246,7 +246,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vm_fs = QtWidgets.QComboBox(editable=True); self.vm_fs.addItem("")
         self.vm_stim = QtWidgets.QComboBox(editable=True); self.vm_stim.addItem("")
         self.vm_stim_labels = QtWidgets.QComboBox(editable=True); self.vm_stim_labels.addItem("")
-        self.vm_n_channels = QtWidgets.QSpinBox(); self.vm_n_channels.setRange(1, 8); self.vm_n_channels.setValue(1)
+        self.vm_n_channels = QtWidgets.QSpinBox(); self.vm_n_channels.setRange(1, 64); self.vm_n_channels.setValue(1)
+        self.vm_channel_indices = QtWidgets.QLineEdit()
+        self.vm_channel_indices.setPlaceholderText("e.g. 0,3 -- leave blank to use all channels")
+        self.vm_channel_indices.setToolTip(
+            "Comma-separated 0-based indices of the channels in the neural\n"
+            "array that are actual nerve-cuff recordings.\n"
+            "Example: a 5-channel acquisition where rows 0 and 3 are the\n"
+            "cuff signals -> type '0,3'.\n"
+            "Leave blank to use every channel."
+        )
         for i, (lbl, w) in enumerate([
             ("neural", self.vm_neural),
             ("rpeak_times", self.vm_rpeak),
@@ -255,7 +264,8 @@ class MainWindow(QtWidgets.QMainWindow):
             ("fs (optional)", self.vm_fs),
             ("stim_events (optional)", self.vm_stim),
             ("stim_labels (optional)", self.vm_stim_labels),
-            ("n_channels (cuffs)", self.vm_n_channels),
+            ("n_channels (info)", self.vm_n_channels),
+            ("cuff channel indices", self.vm_channel_indices),
         ]):
             vm_layout.addWidget(QtWidgets.QLabel(lbl), i // 4, (i % 4) * 2)
             vm_layout.addWidget(w, i // 4, (i % 4) * 2 + 1)
@@ -465,8 +475,23 @@ class MainWindow(QtWidgets.QMainWindow):
         fill(self.vm_stim_labels, list(bvars.keys()), vm.stim_labels)
         self.vm_units.setCurrentText(vm.rpeak_units)
         self.vm_n_channels.setValue(max(vm.n_channels, 1))
+        ci = vm.channel_indices or []
+        self.vm_channel_indices.setText(",".join(str(i) for i in ci))
         log.info("Autopopulated variable mapping (%d / %d / %d vars).",
                  len(bvars), len(rvars), len(svars) if svars else 0)
+        # Show a hint when the neural array has more channels than the user
+        # is likely to want as cuffs.
+        if vm.neural and vm.neural in bvars:
+            shape = bvars[vm.neural].get("shape", ())
+            if len(shape) == 2:
+                n_ch = min(shape)
+                if n_ch >= 3 and not ci:
+                    log.warning(
+                        "Neural variable '%s' has shape %s (~%d channels) -- "
+                        "if only some of these are nerve cuffs, fill in "
+                        "'cuff channel indices' (e.g. 0,3).",
+                        vm.neural, shape, n_ch,
+                    )
 
     def _reuse_varmap(self) -> None:
         root = self.root_edit.text().strip()
@@ -485,9 +510,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vm_stim.setEditText(d.get("stim_events") or "")
         self.vm_stim_labels.setEditText(d.get("stim_labels") or "")
         self.vm_n_channels.setValue(int(d.get("n_channels", 1)))
+        ci = d.get("channel_indices") or []
+        self.vm_channel_indices.setText(",".join(str(i) for i in ci))
         log.info("Loaded previous var map from %s.", p)
 
     def _collect_var_map(self) -> VarMap:
+        idx_text = self.vm_channel_indices.text().strip()
+        channel_indices: list[int] | None = None
+        if idx_text:
+            try:
+                channel_indices = [int(s.strip()) for s in idx_text.split(",") if s.strip() != ""]
+            except ValueError:
+                QtWidgets.QMessageBox.warning(
+                    self, "Bad channel indices",
+                    f"Couldn't parse '{idx_text}' as a comma-separated list of integers. "
+                    "Example: 0,3 -- leave blank to use every channel.",
+                )
         return VarMap(
             neural=self.vm_neural.currentText().strip(),
             rpeak_times=self.vm_rpeak.currentText().strip(),
@@ -497,6 +535,7 @@ class MainWindow(QtWidgets.QMainWindow):
             stim_events=self.vm_stim.currentText().strip() or None,
             stim_labels=self.vm_stim_labels.currentText().strip() or None,
             n_channels=int(self.vm_n_channels.value()),
+            channel_indices=channel_indices,
         )
 
     def _collect_config(self) -> PipelineConfig:

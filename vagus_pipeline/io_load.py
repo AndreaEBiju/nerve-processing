@@ -54,29 +54,63 @@ def _read_any(path: Path) -> dict[str, Any]:
     raise ValueError(f"Unsupported file type: {suffix}")
 
 
-def _to_neural_list(arr: np.ndarray, n_channels_hint: int) -> list[np.ndarray]:
+def _to_neural_list(
+    arr: np.ndarray,
+    n_channels_hint: int,
+    channel_indices: list[int] | None = None,
+) -> list[np.ndarray]:
+    """Slice ``arr`` into a list of 1-D float32 cuff traces.
+
+    Handles 1-D arrays (single cuff), 2-D arrays oriented either way
+    (time-major or channel-major), and selective channel pickup via
+    ``channel_indices``.  Example: a 5-channel acquisition with only
+    rows 0 and 3 being nerve cuffs -> pass ``channel_indices=[0, 3]``
+    and the returned list has those two traces in that order.
+    """
     a = np.asarray(arr)
     if a.ndim == 1:
+        if channel_indices and list(channel_indices) != [0]:
+            raise ValueError(
+                f"channel_indices={channel_indices} requested but neural array is 1-D (single channel)."
+            )
         return [a.astype(np.float32, copy=False)]
     if a.ndim != 2:
         raise ValueError(f"Neural array must be 1-D or 2-D, got {a.shape}")
-    # Orient so the long axis is time
+
+    # Orient so axis 0 is time, axis 1 is channels.
     if a.shape[0] >= a.shape[1]:
-        # rows=time, cols=channels
-        chans = a.shape[1]
-        if chans != n_channels_hint and n_channels_hint > 0:
+        time_view = a
+    else:
+        time_view = a.T
+    total_chans = time_view.shape[1]
+
+    if channel_indices:
+        bad = [i for i in channel_indices if i < 0 or i >= total_chans]
+        if bad:
+            raise ValueError(
+                f"channel_indices={channel_indices} out of range for {total_chans}-channel array (shape={a.shape})."
+            )
+        chans = list(channel_indices)
+        log.info(
+            "Using channels %s of %d in the neural array (shape=%s).",
+            chans, total_chans, a.shape,
+        )
+    else:
+        if total_chans > 2:
+            log.warning(
+                "Neural array has %d channels (shape=%s) but no channel_indices were given; "
+                "using ALL of them as cuffs.  If only some channels are nerve recordings, "
+                "set var_map.channel_indices to the cuff channel numbers.",
+                total_chans, a.shape,
+            )
+        if n_channels_hint > 0 and total_chans != n_channels_hint:
             log.warning(
                 "Neural shape %s suggests %d channels but var_map.n_channels=%d; using %d.",
-                a.shape, chans, n_channels_hint, chans,
+                a.shape, total_chans, n_channels_hint, total_chans,
             )
-        return [a[:, c].astype(np.float32, copy=False) for c in range(chans)]
-    chans = a.shape[0]
-    if chans != n_channels_hint and n_channels_hint > 0:
-        log.warning(
-            "Neural shape %s suggests %d channels but var_map.n_channels=%d; using %d.",
-            a.shape, chans, n_channels_hint, chans,
-        )
-    return [a[c, :].astype(np.float32, copy=False) for c in range(chans)]
+        chans = list(range(total_chans))
+
+    return [time_view[:, c].astype(np.float32, copy=False) for c in chans]
 
 
 def _detect_blanked(neural: np.ndarray) -> np.ndarray:
@@ -156,7 +190,11 @@ def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig)
             fs = float(np.asarray(fs_val).item())
             log.info("Using fs=%g Hz from file variable %s", fs, var_map.fs)
 
-    neural_list = _to_neural_list(_resolve(bdata, var_map.neural), var_map.n_channels)
+    neural_list = _to_neural_list(
+        _resolve(bdata, var_map.neural),
+        var_map.n_channels,
+        channel_indices=var_map.channel_indices,
+    )
     n_samples = neural_list[0].size
     blanked_masks = [_detect_blanked(n) for n in neural_list]
 

@@ -21,6 +21,38 @@ do **not** touch any global Python; your system Python keeps whatever
 version it already had. If 3.12 isn't installed, the scripts error out with
 install instructions instead of silently using the wrong version.
 
+### Multi-channel acquisitions: picking which channels are cuffs
+
+When the `data` variable inside your blanked `.mat` is a multi-channel
+array (e.g. 5 channels: 2 nerve cuffs + 3 unrelated signals), tell the
+pipeline which **0-based indices** to treat as cuffs.
+
+In the GUI, fill in the **"cuff channel indices"** field (next to the
+variable-mapping dropdowns) with a comma-separated list:
+
+```
+0,3            # use the 1st and 4th channels as cuffs, ignore the rest
+0,2,4          # use the 1st, 3rd, and 5th
+                # (leave blank to use ALL channels in the array)
+```
+
+Headless equivalent:
+
+```bash
+python run.py --no-ui --root ... --neural data --rpeak rpeak_samples \
+    --channels 0,3
+```
+
+Validation: the pipeline rejects out-of-range indices with a clear error
+(e.g. `channel_indices=[0,7] out of range for 5-channel array`), and
+logs a warning if your neural array has 3+ channels but you didn't
+specify which to use -- that's almost always a sign that some are not
+cuff recordings.
+
+The chosen channels are run independently through Steps 1-14 (no merging
+across channels, per the spec).  In the resulting `.mat`, each one
+appears as a separate `metrics.cuff(k)` entry.
+
 ### Split-machine workflow: prepass on Windows, MountainSort5 on Mac
 
 The 14-step pipeline can be split across two machines so that the
