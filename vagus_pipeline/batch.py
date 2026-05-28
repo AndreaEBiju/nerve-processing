@@ -75,6 +75,7 @@ def run_batch(
     rpeak_token: str | None = DEFAULT_RPEAK_TOKEN,
     slowwave_token: str | None = DEFAULT_SLOWWAVE_TOKEN,
     mode: str = "full",
+    pairs: list[RecordingPair] | None = None,
     progress_cb: Any | None = None,
 ) -> dict[str, Any]:
     """Run the batch on ``root_dir`` in one of three modes.
@@ -106,6 +107,9 @@ def run_batch(
         raise ValueError(f"mode must be one of {VALID_MODES}, got {mode!r}")
     if mode == "resume":
         return _run_batch_resume(Path(root_dir), cfg, progress_cb)
+
+    # If the caller supplied an explicit pair list (e.g. the GUI filtered
+    # out rows the user unchecked) honour it and skip discovery.
     root = Path(root_dir)
     kwargs: dict[str, Any] = {
         "required_regex": required_regex,
@@ -119,9 +123,14 @@ def run_batch(
         kwargs["rpeak_patterns"] = rpeak_patterns
     if slowwave_patterns is not None:
         kwargs["slowwave_patterns"] = slowwave_patterns
-    pairs = find_pairs(root, **kwargs)
-    if not pairs:
-        raise RuntimeError(f"No recording pairs discovered under {root}")
+    if pairs is None:
+        pairs = find_pairs(root, **kwargs)
+        if not pairs:
+            raise RuntimeError(f"No recording pairs discovered under {root}")
+    else:
+        log.info("Using %d caller-supplied pair(s); discovery skipped.", len(pairs))
+        if not pairs:
+            raise RuntimeError("Caller supplied an empty pair list; nothing to do.")
 
     # Persist the var-map for re-runs
     (root / "batch_varmap.json").write_text(json.dumps(var_map.to_dict(), indent=2))

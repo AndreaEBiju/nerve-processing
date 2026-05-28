@@ -115,7 +115,8 @@ class BatchWorker(QtCore.QObject):
 
     def __init__(self, root: Path, var_map: VarMap, cfg: PipelineConfig,
                  patterns: dict[str, list[str]], signature: dict[str, str | None],
-                 mode: str = "full"):
+                 mode: str = "full",
+                 pairs: list | None = None):
         super().__init__()
         self.root = root
         self.var_map = var_map
@@ -123,6 +124,7 @@ class BatchWorker(QtCore.QObject):
         self.patterns = patterns
         self.signature = signature
         self.mode = mode
+        self.pairs = pairs
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -139,6 +141,7 @@ class BatchWorker(QtCore.QObject):
                 rpeak_token=self.signature.get("rpeak_token"),
                 slowwave_token=self.signature.get("slowwave_token"),
                 mode=self.mode,
+                pairs=self.pairs,
                 progress_cb=lambda phase, i, n: self.progress.emit(phase, i, n),
             )
             self.finished.emit(res)
@@ -206,10 +209,31 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        self.pair_table = QtWidgets.QTableWidget(0, 5)
-        self.pair_table.setHorizontalHeaderLabels(["Dir", "Blanked", "R-peak", "Slow-wave", "Status"])
+        self.pair_table = QtWidgets.QTableWidget(0, 6)
+        self.pair_table.setHorizontalHeaderLabels(
+            ["Include", "Dir", "Blanked", "R-peak", "Slow-wave", "Status"]
+        )
         self.pair_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.pair_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self.pair_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.pair_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.pair_table.customContextMenuRequested.connect(self._pair_table_menu)
         layout.addWidget(self.pair_table, 1)
+
+        # Bulk include / exclude buttons (faster than right-clicking each row).
+        excl_row = QtWidgets.QHBoxLayout()
+        btn_excl_sel = QtWidgets.QPushButton("Exclude selected")
+        btn_excl_sel.clicked.connect(lambda: self._set_inclusion(selected_only=True, include=False))
+        btn_incl_sel = QtWidgets.QPushButton("Include selected")
+        btn_incl_sel.clicked.connect(lambda: self._set_inclusion(selected_only=True, include=True))
+        btn_excl_all = QtWidgets.QPushButton("Exclude all")
+        btn_excl_all.clicked.connect(lambda: self._set_inclusion(selected_only=False, include=False))
+        btn_incl_all = QtWidgets.QPushButton("Include all")
+        btn_incl_all.clicked.connect(lambda: self._set_inclusion(selected_only=False, include=True))
+        for w in (btn_excl_sel, btn_incl_sel, btn_excl_all, btn_incl_all):
+            excl_row.addWidget(w)
+        excl_row.addStretch()
+        layout.addLayout(excl_row)
 
         # Explicit button to re-introspect from a specific row, plus a
         # cancel button (live only while introspection is running) and a
@@ -376,20 +400,82 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.pair_table.setRowCount(len(self.pairs))
         for i, pair in enumerate(self.pairs):
-            self.pair_table.setItem(i, 0, QtWidgets.QTableWidgetItem(str(pair.dir.relative_to(root) if str(pair.dir).startswith(root) else pair.dir)))
-            self.pair_table.setItem(i, 1, QtWidgets.QTableWidgetItem(pair.blanked_path.name))
-            self.pair_table.setItem(i, 2, QtWidgets.QTableWidgetItem(pair.rpeak_path.name))
-            self.pair_table.setItem(i, 3, QtWidgets.QTableWidgetItem(pair.slowwave_path.name if pair.slowwave_path else ""))
+            # Column 0: include checkbox.
+            include_item = QtWidgets.QTableWidgetItem()
+            include_item.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+            include_item.setCheckState(QtCore.Qt.Checked)
+            include_item.setTextAlignment(QtCore.Qt.AlignCenter)
+            self.pair_table.setItem(i, 0, include_item)
+            # Columns 1-5: file info.
+            self.pair_table.setItem(i, 1, QtWidgets.QTableWidgetItem(str(pair.dir.relative_to(root) if str(pair.dir).startswith(root) else pair.dir)))
+            self.pair_table.setItem(i, 2, QtWidgets.QTableWidgetItem(pair.blanked_path.name))
+            self.pair_table.setItem(i, 3, QtWidgets.QTableWidgetItem(pair.rpeak_path.name))
+            self.pair_table.setItem(i, 4, QtWidgets.QTableWidgetItem(pair.slowwave_path.name if pair.slowwave_path else ""))
             status_item = QtWidgets.QTableWidgetItem(pair.status + (f": {pair.note}" if pair.note else ""))
             if pair.status != "ok":
                 status_item.setBackground(QtGui.QColor(255, 240, 200))
-            self.pair_table.setItem(i, 4, status_item)
-        log.info("Discovered %d pair(s).", len(self.pairs))
+            self.pair_table.setItem(i, 5, status_item)
+        log.info("Discovered %d pair(s).  Uncheck the Include column on any row to skip it.", len(self.pairs))
         # Auto-introspect the first pair so the variable dropdowns populate
         # without a second click.  Runs on a worker thread (cloud-storage
         # files can stall on open) and is opt-out via the checkbox.
         if self.pairs and self.chk_auto_introspect.isChecked():
             self._introspect(pair_index=0)
+
+    def _pair_table_menu(self, pos) -> None:
+        """Right-click context menu on the discovery table."""
+        if not self.pairs:
+            return
+        menu = QtWidgets.QMenu(self)
+        act_excl = menu.addAction("Exclude selected rows")
+        act_incl = menu.addAction("Include selected rows")
+        menu.addSeparator()
+        act_excl_all = menu.addAction("Exclude all")
+        act_incl_all = menu.addAction("Include all")
+        menu.addSeparator()
+        act_introspect = menu.addAction("Introspect from this row")
+        chosen = menu.exec(self.pair_table.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen == act_excl:
+            self._set_inclusion(selected_only=True, include=False)
+        elif chosen == act_incl:
+            self._set_inclusion(selected_only=True, include=True)
+        elif chosen == act_excl_all:
+            self._set_inclusion(selected_only=False, include=False)
+        elif chosen == act_incl_all:
+            self._set_inclusion(selected_only=False, include=True)
+        elif chosen == act_introspect:
+            self._introspect_from_selection()
+
+    def _set_inclusion(self, selected_only: bool, include: bool) -> None:
+        if not self.pairs:
+            return
+        rows = (
+            {idx.row() for idx in self.pair_table.selectionModel().selectedRows()}
+            if selected_only
+            else set(range(self.pair_table.rowCount()))
+        )
+        if not rows:
+            return
+        state = QtCore.Qt.Checked if include else QtCore.Qt.Unchecked
+        for r in rows:
+            item = self.pair_table.item(r, 0)
+            if item is not None:
+                item.setCheckState(state)
+        verb = "Included" if include else "Excluded"
+        log.info("%s %d row(s)%s.", verb, len(rows), " (selected)" if selected_only else "")
+
+    def _included_pairs(self) -> list:
+        """Return only the discovered pairs whose Include checkbox is checked."""
+        if not self.pairs:
+            return []
+        kept = []
+        for i, pair in enumerate(self.pairs):
+            item = self.pair_table.item(i, 0)
+            if item is None or item.checkState() == QtCore.Qt.Checked:
+                kept.append(pair)
+        return kept
 
     def _introspect_from_selection(self) -> None:
         """Re-introspect from the row the user has currently selected."""
@@ -588,9 +674,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.progress.setValue(0)
         self.progress.setMaximum(0)  # busy
 
+        mode = self.cmb_mode.currentText()
+        # In full/prepass mode, honour the per-row Include checkboxes by
+        # passing only the kept pairs to the worker.  Resume mode does its
+        # own checkpoint discovery and is unaffected.
+        kept_pairs = None
+        if mode != "resume":
+            kept_pairs = self._included_pairs()
+            if self.pairs and not kept_pairs:
+                QtWidgets.QMessageBox.warning(
+                    self, "Nothing to run",
+                    "Every pair is excluded.  Re-include at least one row and try again.",
+                )
+                self.btn_run.setEnabled(True)
+                self.progress.setMaximum(1); self.progress.setValue(0)
+                return
+            if kept_pairs and self.pairs and len(kept_pairs) < len(self.pairs):
+                log.info(
+                    "Running on %d of %d discovered pair(s) (the rest are excluded).",
+                    len(kept_pairs), len(self.pairs),
+                )
         self.worker = BatchWorker(
             Path(root), vm, cfg, self._patterns(), self._signature(),
-            mode=self.cmb_mode.currentText(),
+            mode=mode,
+            pairs=kept_pairs,
         )
         self.thread = QtCore.QThread()
         self.worker.moveToThread(self.thread)

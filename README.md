@@ -21,6 +21,36 @@ do **not** touch any global Python; your system Python keeps whatever
 version it already had. If 3.12 isn't installed, the scripts error out with
 install instructions instead of silently using the wrong version.
 
+### Excluding specific pairs after discovery
+
+Discovery often picks up a few pairs you don't want to process this run
+(a known-bad recording, a duplicate, a session you've already processed).
+You don't have to rename or move the files -- just deselect them in the
+GUI.
+
+After **Discover pairs** fills the table, every row has an
+**Include** checkbox in the first column (default on).  Three ways to
+exclude rows:
+
+1. **Click the checkbox** in the Include column to uncheck a single row.
+2. **Select rows + right-click** → "Exclude selected rows" /
+   "Include selected rows".  Standard table selection rules
+   (Shift-click, Ctrl/Cmd-click) apply.
+3. **Buttons below the table**: Exclude selected / Include selected /
+   Exclude all / Include all.
+
+When you click **Run batch**, only the rows whose Include box is still
+checked are passed to the pipeline.  The log shows
+``Running on N of M discovered pair(s) (the rest are excluded).``  If
+every row is excluded, the run is blocked with a "Nothing to run"
+dialog rather than failing silently.
+
+Headless equivalent: there's no direct flag for excluding particular
+pairs from the CLI -- if you need that, point ``--root`` at a
+sub-directory that contains only the pairs you want, or move the
+unwanted files to a sibling folder for the duration of the run.  The
+GUI is the better tool for ad-hoc exclusion.
+
 ### Multi-channel acquisitions: picking which channels are cuffs
 
 When the `data` variable inside your blanked `.mat` is a multi-channel
