@@ -40,15 +40,47 @@ APFS / ext4 / NTFS):
 VENV_DIR=.venv ./setup.sh
 ```
 
-### Windows (PowerShell)
+### Windows
+
+Two setup entry points — pick whichever shell you use.
+
+**Option 1: cmd.exe** (works on every Windows install, no execution-policy fiddling):
+
+```cmd
+git clone https://github.com/AndreaEBiju/nerve-processing.git
+cd nerve-processing
+setup.bat
+.venv\Scripts\activate.bat
+python run.py --smoke
+```
+
+**Option 2: PowerShell:**
 
 ```powershell
 git clone https://github.com/AndreaEBiju/nerve-processing.git
 cd nerve-processing
-.\setup.ps1                         # creates .venv\ inside the repo
-.\.venv\Scripts\Activate.ps1        # in any new shell
+.\setup.ps1
+.\.venv\Scripts\Activate.ps1
 python run.py --smoke
 ```
+
+If PowerShell rejects `setup.ps1` with *"running scripts is disabled on this system"*, you have three options:
+
+| | |
+| --- | --- |
+| **Easiest** | Run `setup.bat` instead — it uses cmd.exe and never touches policy. |
+| One-off bypass | `powershell -ExecutionPolicy Bypass -File .\setup.ps1` |
+| Permanent (current user) | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` (one time) |
+
+The setup scripts auto-detect the Python interpreter — they try `py -3` first (the
+launcher that ships with python.org installers), then `python`, then `python3`.
+Override with `set PY=py -3.11` (cmd) or `$env:PY="py -3.11"` (PowerShell) before
+running setup if you have multiple Pythons installed.
+
+If your repo lives on OneDrive with **Files On-Demand** enabled and you see
+metadata errors during install or the pipeline stalls on file reads, mark the
+folder for offline availability via the OneDrive sync client (or move the venv
+outside the synced folder: `set VENV_DIR=C:\venvs\nerve && setup.bat`).
 
 ### Manual install (any OS)
 
