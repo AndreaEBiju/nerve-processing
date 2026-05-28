@@ -21,6 +21,30 @@ do **not** touch any global Python; your system Python keeps whatever
 version it already had. If 3.12 isn't installed, the scripts error out with
 install instructions instead of silently using the wrong version.
 
+### Slow-wave input: continuous trace OR pre-detected peak times
+
+Step 11 (slow-wave phase tagging) accepts two input shapes:
+
+1. **Continuous trace** -- a 1-D numeric array sampled at any rate.
+   Linearly resampled to the neural rate before Hilbert phase
+   extraction.  Typical variable name: ``slowWaves.trace`` /
+   ``slow_wave`` / ``LFP`` / ``filtered``.
+2. **Cell array of peak sample indices** -- e.g.
+   ``slowWavePeakLocs`` as a 1xK MATLAB cell where each cell holds
+   the sample numbers of detected slow-wave peaks from one detector
+   pass.  All cells are concatenated, sorted, and a synthetic
+   ``sin(2*pi * (t - prev_peak) / (next_peak - prev_peak))`` trace is
+   reconstructed at the neural sampling rate so the rest of Step 11
+   (MRL, Rayleigh p, phase histograms) sees a clean sinusoid with
+   true phase = 0 at every detected peak.  Mathematically identical
+   to running Hilbert on a real sinusoid through the same peaks.
+
+The autopop recognises both: it scores variable names containing
+``peakloc`` / ``peaktimes`` / ``peaks_idx`` / ``sw_peaks`` as the
+peak-times path (regardless of cell-array packaging), then falls back
+to ``slow`` / ``wave`` / ``lfp`` / ``trace`` / ``filtered`` for the
+continuous-trace path.  Either way the rest of the pipeline is unchanged.
+
 ### Excluding specific pairs after discovery
 
 Discovery often picks up a few pairs you don't want to process this run

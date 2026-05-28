@@ -572,17 +572,26 @@ def autopopulate_var_map(
         """Pick a slow-wave variable.
 
         Strategy:
-          1. Among entries whose **name** hints at slow-wave content
-             (slow / wave / lfp / trace / filtered), keep only those that
-             are 1-D numeric arrays at least ``min_length`` samples long;
-             pick the LONGEST -- this avoids 30-sample "per-segment
-             summary" fields like ``slowWaves.amplitudes`` getting picked
-             over the real trace ``slowWaves.trace``.
-          2. If nothing name-matches and ``allow_longest_array`` is True
+          1. Among entries whose **name** hints at slow-wave PEAK times
+             (peakloc / peaktimes / peaks_idx / sw_peaks), accept the
+             FIRST one even if it's a cell array (kind=sequence).  The
+             loader reconstructs a synthetic trace from those peaks.
+          2. Among entries whose name hints at a slow-wave TRACE (slow /
+             wave / lfp / trace / filtered), keep only 1-D numeric
+             arrays at least ``min_length`` samples long; pick the LONGEST.
+          3. If nothing name-matches and ``allow_longest_array`` is True
              (dedicated slow-wave file), pick the longest 1-D numeric
              array overall.
-          3. Otherwise return "" (no autopopulation).
+          4. Otherwise return "" (no autopopulation).
         """
+        peak_tokens = ("peakloc", "peak_loc", "peaktimes", "peak_times", "peakidx", "peak_idx", "peaks_idx", "sw_peaks", "sw_peak")
+        for k in vars_:
+            if any(t in k.lower() for t in peak_tokens):
+                # Cell arrays show up as kind="sequence"; that's fine here.
+                kind = vars_[k].get("kind", "")
+                if kind in ("array", "sequence"):
+                    return k
+
         candidates = {
             k: v for k, v in vars_.items()
             if _is_1d_numeric(v)

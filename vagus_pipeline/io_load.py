@@ -205,25 +205,124 @@ def _rpeak_to_samples(values, units: str, fs: float, var_name: str = "rpeak_time
     raise ValueError(f"Unknown rpeak_units: {units}")
 
 
+def _looks_like_peak_cells(values) -> bool:
+    """True if ``values`` looks like a MATLAB-style cell array of peak-sample
+    arrays (a sequence whose entries are numeric 1-D arrays).
+    """
+    if isinstance(values, (list, tuple)):
+        seq = list(values)
+    elif isinstance(values, np.ndarray) and values.dtype == object and values.ndim <= 2:
+        seq = list(values.flat)
+    else:
+        return False
+    if not seq or len(seq) > 64:
+        return False
+    for cell in seq:
+        a = np.asarray(cell) if not isinstance(cell, np.ndarray) else cell
+        if a.dtype.kind not in "iuf":
+            return False
+        if a.ndim > 2:
+            return False
+        if a.size == 0:
+            continue
+        # Heuristic: peak indices are typically integer-valued and within
+        # plausible sample range (small positive numbers up to a few billion).
+        if a.size > 1 and np.any(a < 0):
+            return False
+    return True
+
+
+def _slowwave_from_peak_cells(values, n_samples: int, var_name: str) -> np.ndarray:
+    """Build a synthetic phase-coded slow-wave trace from peak sample indices.
+
+    All peak arrays (across cells) are concatenated and sorted.  Between
+    consecutive peaks, phase advances linearly from 0 to 2*pi and the
+    output is ``sin(phase)`` so that the existing Step 11 Hilbert pipeline
+    sees a clean sinusoid whose true phase = 0 at every detected peak.
+    Before the first peak and after the last peak the trace is held at 0.
+    """
+    if isinstance(values, np.ndarray) and values.dtype == object:
+        cells = list(values.flat)
+    else:
+        cells = list(values)
+
+    pieces = []
+    for c in cells:
+        if c is None:
+            continue
+        a = np.asarray(c).ravel()
+        if a.size == 0:
+            continue
+        pieces.append(a.astype(np.int64))
+    if not pieces:
+        raise ValueError(
+            f"Slow-wave variable '{var_name}' is a cell array but every cell is empty; "
+            f"no peaks to reconstruct phase from."
+        )
+    peaks = np.unique(np.concatenate(pieces))
+    peaks = peaks[(peaks >= 0) & (peaks < n_samples)]
+    if peaks.size < 2:
+        raise ValueError(
+            f"Slow-wave variable '{var_name}' has only {peaks.size} valid peak(s) within "
+            f"the recording length ({n_samples}); need at least 2 to define a cycle."
+        )
+
+    log.info(
+        "Slow-wave variable '%s' looks like a cell of %d cell(s) holding peak sample "
+        "indices; reconstructed synthetic phase trace from %d unique peaks "
+        "(median cycle length = %.3f s).",
+        var_name, len(cells), peaks.size, float(np.median(np.diff(peaks))) / max(n_samples, 1),
+    )
+
+    sw = np.zeros(n_samples, dtype=np.float32)
+    # Vectorised assignment: walk pairs of consecutive peaks, fill the
+    # segment with sin(linspace(0, 2*pi)).
+    for s0, s1 in zip(peaks[:-1], peaks[1:]):
+        if s1 <= s0:
+            continue
+        seg_len = int(s1 - s0)
+        phases = np.linspace(0.0, 2.0 * np.pi, seg_len, endpoint=False, dtype=np.float32)
+        sw[s0:s1] = np.sin(phases)
+    return sw
+
+
 def _coerce_slowwave(values, n_samples: int, var_name: str) -> np.ndarray | None:
     """Turn the resolved slow-wave variable into a 1-D float32 trace.
 
-    Same defensive idea as :func:`_rpeak_to_samples`: surface a clear
-    error pointing at the chosen variable when it's a struct, a ragged
-    cell array, a multi-dim matrix, or way too short to plausibly be a
-    slow-wave trace.  When the length is reasonable (within 1% of
-    neural length / 10000) we linearly resample to ``n_samples``; when
-    it's wildly off we refuse rather than silently producing garbage.
+    Two input shapes are supported:
+
+    * **Continuous trace** -- a 1-D numeric array (the default).  Resampled
+      linearly to ``n_samples`` if needed.
+    * **Cell array / list of peak sample indices** -- common upstream of
+      this pipeline (e.g. ``slowWavePeakLocs`` from a MATLAB analysis
+      script, packed as a 1xK cell where each cell holds the sample
+      numbers of one detector pass).  A synthetic phase-coded trace
+      ``sin(2*pi * (t - prev_peak) / (next_peak - prev_peak))`` is
+      reconstructed at the neural sampling rate so Step 11's Hilbert
+      pipeline keeps working unchanged -- MRL, Rayleigh, and phase
+      histograms are mathematically identical to what you'd get from a
+      clean sinusoid running through those peaks.
     """
+    # ---- Path A: cell-array of peak times -----------------------------------
+    if _looks_like_peak_cells(values):
+        return _slowwave_from_peak_cells(values, n_samples, var_name)
+
     try:
         arr = np.asarray(values)
     except Exception as e:
         raise ValueError(
             f"Slow-wave variable '{var_name}' could not be interpreted as a numeric array: "
-            f"got type={type(values).__name__}.  Pick a 1-D array of samples (e.g. 'slowWaves.trace')."
+            f"got type={type(values).__name__}.  Pick a 1-D array of samples "
+            f"(e.g. 'slowWaves.trace') or a cell array of peak sample indices "
+            f"(e.g. 'slowWavePeakLocs')."
         ) from e
 
     if arr.dtype == object:
+        # Could still be a cell of peak arrays that _looks_like_peak_cells
+        # didn't catch (e.g. wrapped one extra level by scipy).  Try the
+        # peak-cells path one more time on the ndarray contents.
+        if _looks_like_peak_cells(list(arr.flat)):
+            return _slowwave_from_peak_cells(list(arr.flat), n_samples, var_name)
         sample = arr.flat[0] if arr.size else None
         descr = f"first element type={type(sample).__name__}"
         if hasattr(sample, "shape"):
@@ -232,7 +331,8 @@ def _coerce_slowwave(values, n_samples: int, var_name: str) -> np.ndarray | None
             f"Slow-wave variable '{var_name}' has dtype=object "
             f"(probably a struct or cell array; {descr}).  "
             f"Pick a variable that is a 1-D numeric array directly "
-            f"(e.g. 'slowWaves.trace' rather than the wrapping struct)."
+            f"(e.g. 'slowWaves.trace' rather than the wrapping struct), "
+            f"or a cell of peak sample indices (e.g. 'slowWavePeakLocs')."
         )
 
     if arr.ndim > 2 or (arr.ndim == 2 and 1 not in arr.shape):
