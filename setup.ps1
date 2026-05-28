@@ -1,4 +1,4 @@
-# Bootstrap a Python 3.12 virtualenv for the vagus nerve cuff pipeline.
+﻿# Bootstrap a Python 3.12 virtualenv for the vagus nerve cuff pipeline.
 #
 # The required Python version is pinned in .python-version and enforced
 # here.  Set $env:PY to force a specific interpreter (it must still
@@ -91,11 +91,11 @@ if (Test-Path $VENV_DIR) {
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed (exit $LASTEXITCODE)" }
 }
 
-# Use the venv's python directly rather than activating it — avoids the
+# Use the venv's python directly rather than activating it -- avoids the
 # Activate.ps1 execution-policy trap on locked-down machines.
 $venvPython = Join-Path $VENV_DIR "Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
-    throw "Venv was created but $venvPython is missing — is the venv corrupt?"
+    throw "Venv was created but $venvPython is missing -- is the venv corrupt?"
 }
 
 Write-Host ">>> Upgrading pip / wheel"

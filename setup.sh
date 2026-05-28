@@ -8,7 +8,7 @@
 # Why the venv lives outside the repo by default
 # ----------------------------------------------
 # When the repo sits on a non-APFS/HFS+ filesystem (exFAT external drive,
-# Google Drive File Stream, OneDrive, network share, …), macOS sprinkles
+# Google Drive File Stream, OneDrive, network share, ...), macOS sprinkles
 # ``._*`` AppleDouble sidecar files into every directory.  pip's package-
 # metadata reader treats those sidecars as real ``METADATA`` files and
 # crashes with ``UnicodeDecodeError``.  Putting the venv on the user's
@@ -99,7 +99,7 @@ source "$VENV_DIR/bin/activate"
 echo ">>> Upgrading pip / wheel"
 python -m pip install --quiet --upgrade pip wheel
 
-echo ">>> Installing requirements (this can take several minutes the first time —"
+echo ">>> Installing requirements (this can take several minutes the first time --"
 echo "    spikeinterface + mountainsort5 + PySide6 are big)"
 python -m pip install -r "$REPO_DIR/requirements.txt"
 
