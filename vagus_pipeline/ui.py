@@ -545,20 +545,42 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_introspection(self, bvars, rvars, svars, vm) -> None:
 
-        # populate dropdowns
-        def fill(combo: QtWidgets.QComboBox, options: list[str], current: str | None) -> None:
-            combo.clear()
-            combo.addItem("")
-            combo.addItems(options)
-            if current and current in options:
-                combo.setCurrentText(current)
+        # Populate dropdowns.  Each item shows ``name  (shape, dtype, kind)``
+        # in the visible text so the user can tell at a glance which variable
+        # is a 1-D array of sample indices vs. a struct full of HRV metrics;
+        # only the bare name is stored as the item's data so when the user
+        # picks a row, the existing _collect_var_map() reads back the same
+        # string the rest of the pipeline expects.
+        def _label(name: str, info: dict | None) -> str:
+            if info is None:
+                return name
+            shape = info.get("shape", ())
+            dtype = info.get("dtype", "")
+            kind = info.get("kind", "")
+            return f"{name}   ({shape}, {dtype}, {kind})"
 
-        fill(self.vm_neural, list(bvars.keys()), vm.neural)
-        fill(self.vm_rpeak, list(rvars.keys()), vm.rpeak_times)
-        fill(self.vm_slowwave, list(bvars.keys()) + (list(svars.keys()) if svars else []), vm.slowwave)
-        fill(self.vm_fs, list(bvars.keys()), vm.fs)
-        fill(self.vm_stim, list(bvars.keys()), vm.stim_events)
-        fill(self.vm_stim_labels, list(bvars.keys()), vm.stim_labels)
+        def fill(combo: QtWidgets.QComboBox, names: list[str], info_map: dict, current: str | None) -> None:
+            combo.clear()
+            combo.addItem("", userData="")
+            for name in names:
+                combo.addItem(_label(name, info_map.get(name)), userData=name)
+            if current:
+                for i in range(combo.count()):
+                    if combo.itemData(i) == current:
+                        combo.setCurrentIndex(i)
+                        break
+                else:
+                    # Editable combos preserve free-text entries even if not in
+                    # the introspected list.
+                    combo.setEditText(current)
+
+        combined_slow = {**bvars, **(svars or {})}
+        fill(self.vm_neural, list(bvars.keys()), bvars, vm.neural)
+        fill(self.vm_rpeak, list(rvars.keys()), rvars, vm.rpeak_times)
+        fill(self.vm_slowwave, list(bvars.keys()) + (list(svars.keys()) if svars else []), combined_slow, vm.slowwave)
+        fill(self.vm_fs, list(bvars.keys()), bvars, vm.fs)
+        fill(self.vm_stim, list(bvars.keys()), bvars, vm.stim_events)
+        fill(self.vm_stim_labels, list(bvars.keys()), bvars, vm.stim_labels)
         self.vm_units.setCurrentText(vm.rpeak_units)
         self.vm_n_channels.setValue(max(vm.n_channels, 1))
         ci = vm.channel_indices or []
@@ -600,6 +622,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vm_channel_indices.setText(",".join(str(i) for i in ci))
         log.info("Loaded previous var map from %s.", p)
 
+    def _selected_var(self, combo: QtWidgets.QComboBox) -> str:
+        """Return the bare variable name behind a labelled dropdown entry.
+
+        Items added via :meth:`_apply_introspection` carry the variable name
+        as ``userData`` while their visible text includes shape/dtype hints.
+        When the user types a custom value (editable combo), ``userData``
+        is empty so we fall back to the trimmed visible text.
+        """
+        data = combo.currentData()
+        if isinstance(data, str) and data:
+            return data.strip()
+        return combo.currentText().strip().split()[0] if combo.currentText().strip() else ""
+
     def _collect_var_map(self) -> VarMap:
         idx_text = self.vm_channel_indices.text().strip()
         channel_indices: list[int] | None = None
@@ -613,13 +648,13 @@ class MainWindow(QtWidgets.QMainWindow):
                     "Example: 0,3 -- leave blank to use every channel.",
                 )
         return VarMap(
-            neural=self.vm_neural.currentText().strip(),
-            rpeak_times=self.vm_rpeak.currentText().strip(),
+            neural=self._selected_var(self.vm_neural),
+            rpeak_times=self._selected_var(self.vm_rpeak),
             rpeak_units=self.vm_units.currentText().strip() or "sample",
-            slowwave=self.vm_slowwave.currentText().strip() or None,
-            fs=self.vm_fs.currentText().strip() or None,
-            stim_events=self.vm_stim.currentText().strip() or None,
-            stim_labels=self.vm_stim_labels.currentText().strip() or None,
+            slowwave=self._selected_var(self.vm_slowwave) or None,
+            fs=self._selected_var(self.vm_fs) or None,
+            stim_events=self._selected_var(self.vm_stim) or None,
+            stim_labels=self._selected_var(self.vm_stim_labels) or None,
             n_channels=int(self.vm_n_channels.value()),
             channel_indices=channel_indices,
         )

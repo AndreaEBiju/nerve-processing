@@ -487,16 +487,45 @@ def autopopulate_var_map(
 
     vm.neural, vm.n_channels = pick_neural(blanked_vars)
 
-    # rpeak: prefer name-matches
-    name_hits = [k for k in rpeak_vars if any(t in k.lower() for t in ("rpeak", "r_peak", "hr", "peaks"))]
+    # rpeak: prefer SPECIFIC name-matches and only accept 1-D numeric arrays.
+    # Generic substrings like "hr" / "br" match too broadly in HRV analysis
+    # files where many variables (rate, segments, mean RR, etc.) share the
+    # token but aren't sample-index arrays.
+    def _is_1d_numeric(v: dict) -> bool:
+        shape = v.get("shape", ())
+        if v.get("kind") != "array":
+            return False
+        # Accept (N,) or (N, 1) / (1, N).
+        if len(shape) == 1:
+            return shape[0] > 0
+        if len(shape) == 2 and (shape[0] == 1 or shape[1] == 1):
+            return max(shape) > 0
+        return False
+
+    specific_tokens = ("rpeak", "r_peak", "rpeaks", "rwave", "r_wave", "peaks", "peak_samples", "peak_times", "qrs")
+    broad_tokens = ("hr", "br", "ibi", "rri")
+    name_hits: list[str] = []
+    for tok in specific_tokens:
+        for k, v in rpeak_vars.items():
+            if tok in k.lower() and _is_1d_numeric(v) and k not in name_hits:
+                name_hits.append(k)
+    if not name_hits:
+        for tok in broad_tokens:
+            for k, v in rpeak_vars.items():
+                if tok in k.lower() and _is_1d_numeric(v) and k not in name_hits:
+                    name_hits.append(k)
     if name_hits:
         vm.rpeak_times = name_hits[0]
     else:
+        # Last resort: longest 1-D numeric array.
         longest, longest_size = "", 0
         for k, v in rpeak_vars.items():
+            if not _is_1d_numeric(v):
+                continue
             shape = v.get("shape", ())
-            if v.get("kind") == "array" and len(shape) == 1 and shape[0] > longest_size:
-                longest, longest_size = k, shape[0]
+            n = max(shape) if shape else 0
+            if n > longest_size:
+                longest, longest_size = k, n
         vm.rpeak_times = longest
 
     # units heuristic for rpeak

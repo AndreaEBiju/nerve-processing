@@ -157,8 +157,45 @@ def _contains(data: dict, name: str) -> bool:
         return False
 
 
-def _rpeak_to_samples(values: np.ndarray, units: str, fs: float) -> np.ndarray:
-    v = np.asarray(values).ravel().astype(np.float64)
+def _rpeak_to_samples(values, units: str, fs: float, var_name: str = "rpeak_times") -> np.ndarray:
+    """Convert an R-peak variable into integer sample indices.
+
+    The variable must be a 1-D numeric array (or 2-D with one of the axes
+    equal to 1).  When the user has accidentally picked a struct, a cell
+    array of variable-length segments, or a multi-dimensional matrix
+    instead, the bare ``np.asarray`` call produces the cryptic
+    "setting an array element with a sequence ... inhomogeneous shape"
+    message.  This wrapper catches that and re-raises with the variable
+    name, type and shape so the user knows which dropdown to fix.
+    """
+    try:
+        arr = np.asarray(values)
+    except Exception as e:
+        raise ValueError(
+            f"R-peak variable '{var_name}' could not be interpreted as a numeric array: "
+            f"got type={type(values).__name__}.  Pick a variable that is a 1-D array "
+            f"of sample indices (e.g. 'Rpeaks', 'peak_samples')."
+        ) from e
+
+    if arr.dtype == object:
+        # Common cause: cell array of per-segment peak lists, or struct.
+        sample = np.asarray(values).flat[0] if hasattr(values, "__len__") else values
+        sample_descr = f"first element type={type(sample).__name__}"
+        if hasattr(sample, "shape"):
+            sample_descr += f", shape={sample.shape}"
+        raise ValueError(
+            f"R-peak variable '{var_name}' has dtype=object "
+            f"(probably a struct or cell array; {sample_descr}).  "
+            f"Pick a variable that is a 1-D array of sample indices directly."
+        )
+
+    # Accept 1-D, or 2-D with one axis == 1.
+    if arr.ndim > 2 or (arr.ndim == 2 and 1 not in arr.shape):
+        raise ValueError(
+            f"R-peak variable '{var_name}' has shape {arr.shape}; expected a 1-D "
+            f"array (or 2-D with one axis = 1) of sample indices."
+        )
+    v = arr.ravel().astype(np.float64)
     if units == "sample":
         return v.astype(np.int64)
     if units == "sec":
@@ -198,7 +235,12 @@ def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig)
     n_samples = neural_list[0].size
     blanked_masks = [_detect_blanked(n) for n in neural_list]
 
-    rpeak_samples = _rpeak_to_samples(_resolve(rdata, var_map.rpeak_times), var_map.rpeak_units, fs)
+    rpeak_samples = _rpeak_to_samples(
+        _resolve(rdata, var_map.rpeak_times),
+        var_map.rpeak_units,
+        fs,
+        var_name=var_map.rpeak_times,
+    )
     # filter to valid range
     rpeak_samples = rpeak_samples[(rpeak_samples >= 0) & (rpeak_samples < n_samples)]
 
