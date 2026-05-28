@@ -139,19 +139,46 @@ def run_batch(
     log.info("Pass 1: collecting waveforms for global PCA basis...")
     per_pair_cap = max(cfg.pca_pool_max_spikes // max(len(pairs), 1), 100)
     pooled: list[np.ndarray] = []
+    pass1_errors: list[tuple[str, str]] = []  # (pair_name, error_text)
     for i, pair in enumerate(pairs):
         try:
             wfs_list = _pass1_collect_waveforms(pair, var_map, cfg, per_pair_cap)
+            n_spikes_this_pair = sum(int(w.shape[0]) for w in wfs_list)
             for wfs in wfs_list:
                 if wfs.shape[0] > 0:
                     pooled.append(wfs)
+            if n_spikes_this_pair == 0:
+                pass1_errors.append((
+                    pair.blanked_path.name,
+                    f"detection returned 0 spikes (raise/lower --threshold-sigma?)",
+                ))
         except Exception as e:
-            log.error("Pass 1 failed on %s: %s", pair.blanked_path, e)
+            err_msg = f"{type(e).__name__}: {e}"
+            log.error("Pass 1 failed on %s: %s", pair.blanked_path.name, err_msg)
+            pass1_errors.append((pair.blanked_path.name, err_msg))
         if progress_cb:
             progress_cb("pass1", i + 1, len(pairs))
 
     if not pooled:
-        raise RuntimeError("Pass 1 yielded no waveforms; cannot fit PCA basis.")
+        summary = "Pass 1 yielded no waveforms across any pair; cannot fit PCA basis.\n\n"
+        summary += "Per-pair errors:\n"
+        # Deduplicate identical error messages so a common cause (e.g.
+        # wrong R-peak variable) doesn't print N copies.
+        from collections import defaultdict
+        grouped: dict[str, list[str]] = defaultdict(list)
+        for name, err in pass1_errors:
+            grouped[err].append(name)
+        for err, names in grouped.items():
+            sample = ", ".join(names[:3])
+            if len(names) > 3:
+                sample += f", ... ({len(names)} pairs total)"
+            summary += f"  - {sample}:\n      {err}\n"
+        summary += (
+            "\nFix the variable mapping in the GUI (or in --neural / --rpeak / "
+            "--slowwave on the CLI) and re-run.  Slow-wave is optional -- "
+            "clear the slowwave dropdown to skip Step 11."
+        )
+        raise RuntimeError(summary)
     pooled_arr = np.concatenate(pooled, axis=0)
     pca_basis = fit_pca(pooled_arr, cfg)
     basis_path = root / "batch_pca_basis.npz"

@@ -313,26 +313,62 @@ def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig)
     slowwave = None
     if var_map.slowwave:
         sw_raw: Any | None = None
+        sw_source: str | None = None
         if _contains(bdata, var_map.slowwave):
             sw_raw = _resolve(bdata, var_map.slowwave)
+            sw_source = "blanked file"
         elif pair.slowwave_path is not None:
             swdata = _read_any(pair.slowwave_path)
             if _contains(swdata, var_map.slowwave):
                 sw_raw = _resolve(swdata, var_map.slowwave)
-        if sw_raw is not None:
-            slowwave = _coerce_slowwave(sw_raw, n_samples, var_map.slowwave)
+                sw_source = "slow-wave file"
+        if sw_raw is None:
+            log.warning(
+                "Slow-wave variable '%s' not found in either the blanked or slow-wave "
+                "file for %s; continuing without slow-wave (Step 11 will be skipped).",
+                var_map.slowwave, pair.blanked_path.name,
+            )
+        else:
+            try:
+                slowwave = _coerce_slowwave(sw_raw, n_samples, var_map.slowwave)
+            except ValueError as e:
+                # Slow-wave is optional per spec -- don't crash the whole
+                # recording on a bad variable pick.  Step 11 will be
+                # silently skipped instead.
+                log.warning(
+                    "Slow-wave from %s rejected; continuing without slow-wave for %s. "
+                    "Step 11 will be skipped.  Reason: %s",
+                    sw_source, pair.blanked_path.name, e,
+                )
+                slowwave = None
 
+    # Stim events are optional; failure here doesn't abort the whole pair.
     stim_events: list[tuple[int, str]] | None = None
     if var_map.stim_events and _contains(bdata, var_map.stim_events):
-        ev = np.asarray(_resolve(bdata, var_map.stim_events)).ravel()
-        labels = None
-        if var_map.stim_labels and _contains(bdata, var_map.stim_labels):
-            raw = _resolve(bdata, var_map.stim_labels)
-            labels = [str(x) for x in np.asarray(raw).ravel().tolist()]
-        ev_samples = ev.astype(np.int64) if ev.dtype.kind in "iu" else np.round(ev * fs).astype(np.int64)
-        if labels is None or len(labels) != ev_samples.size:
-            labels = [f"cond_{i}" for i in range(ev_samples.size)]
-        stim_events = [(int(s), str(l)) for s, l in zip(ev_samples, labels)]
+        try:
+            raw_ev = _resolve(bdata, var_map.stim_events)
+            ev = np.asarray(raw_ev)
+            if ev.dtype == object or ev.ndim > 2:
+                raise ValueError(
+                    f"Stim events variable '{var_map.stim_events}' has dtype={ev.dtype} "
+                    f"and shape={ev.shape}; expected a 1-D numeric array of event times."
+                )
+            ev = ev.ravel()
+            labels = None
+            if var_map.stim_labels and _contains(bdata, var_map.stim_labels):
+                raw = _resolve(bdata, var_map.stim_labels)
+                labels = [str(x) for x in np.asarray(raw).ravel().tolist()]
+            ev_samples = ev.astype(np.int64) if ev.dtype.kind in "iu" else np.round(ev * fs).astype(np.int64)
+            if labels is None or len(labels) != ev_samples.size:
+                labels = [f"cond_{i}" for i in range(ev_samples.size)]
+            stim_events = [(int(s), str(l)) for s, l in zip(ev_samples, labels)]
+        except Exception as e:
+            log.warning(
+                "Stim events from '%s' rejected for %s; continuing without stim epochs. "
+                "Step 13 will be skipped.  Reason: %s",
+                var_map.stim_events, pair.blanked_path.name, e,
+            )
+            stim_events = None
 
     rec = Recording(
         pair=pair,

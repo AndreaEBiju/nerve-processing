@@ -799,7 +799,30 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_failed(self, msg: str) -> None:
         self.btn_run.setEnabled(True)
         log.error(msg)
-        QtWidgets.QMessageBox.critical(self, "Batch failed", msg[:2000])
+        # Use a resizable dialog with a scrollable text view so per-pair
+        # error summaries don't get clipped to ~one line per pair.
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Batch failed")
+        dlg.resize(820, 480)
+        v = QtWidgets.QVBoxLayout(dlg)
+        v.addWidget(QtWidgets.QLabel("The batch did not complete.  Details below:"))
+        text = QtWidgets.QPlainTextEdit(readOnly=True)
+        text.setPlainText(msg)
+        text.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        font = QtGui.QFont("Menlo")
+        font.setStyleHint(QtGui.QFont.Monospace)
+        text.setFont(font)
+        v.addWidget(text, 1)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_copy = QtWidgets.QPushButton("Copy to clipboard")
+        btn_copy.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(msg))
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(dlg.accept)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_copy)
+        btn_row.addWidget(btn_close)
+        v.addLayout(btn_row)
+        dlg.exec()
 
 
 def launch() -> int:
