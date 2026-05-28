@@ -280,6 +280,16 @@ class MainWindow(QtWidgets.QMainWindow):
             "cuff signals -> type '0,3'.\n"
             "Leave blank to use every channel."
         )
+        # Each editable combo gets a generous min content length so the
+        # visible text doesn't truncate ``name (shape, dtype, kind)`` to a
+        # few characters in the closed state.
+        for combo in (self.vm_neural, self.vm_rpeak, self.vm_slowwave,
+                      self.vm_fs, self.vm_stim, self.vm_stim_labels):
+            combo.setMinimumContentsLength(40)
+            combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        # Two-column layout (label, widget) -- gives each combo the full
+        # remaining row width.
         for i, (lbl, w) in enumerate([
             ("neural", self.vm_neural),
             ("rpeak_times", self.vm_rpeak),
@@ -291,8 +301,10 @@ class MainWindow(QtWidgets.QMainWindow):
             ("n_channels (info)", self.vm_n_channels),
             ("cuff channel indices", self.vm_channel_indices),
         ]):
-            vm_layout.addWidget(QtWidgets.QLabel(lbl), i // 4, (i % 4) * 2)
-            vm_layout.addWidget(w, i // 4, (i % 4) * 2 + 1)
+            vm_layout.addWidget(QtWidgets.QLabel(lbl), i, 0)
+            vm_layout.addWidget(w, i, 1)
+        vm_layout.setColumnStretch(0, 0)
+        vm_layout.setColumnStretch(1, 1)
         layout.addWidget(vm_box)
 
         # --- Config review
@@ -562,8 +574,33 @@ class MainWindow(QtWidgets.QMainWindow):
         def fill(combo: QtWidgets.QComboBox, names: list[str], info_map: dict, current: str | None) -> None:
             combo.clear()
             combo.addItem("", userData="")
+            # Per-item tooltip = the full labelled string, so hovering any
+            # entry in the popup shows the whole name + shape even when the
+            # visible text is truncated.
             for name in names:
-                combo.addItem(_label(name, info_map.get(name)), userData=name)
+                label = _label(name, info_map.get(name))
+                combo.addItem(label, userData=name)
+                idx = combo.count() - 1
+                combo.setItemData(idx, label, QtCore.Qt.ToolTipRole)
+            # Resize the popup view so the longest item fits.  The combobox
+            # itself stays narrow (it lives inside a 4-column grid), but
+            # ``QComboBox.view()`` is the dropdown widget and Qt is happy
+            # for it to be wider than its parent.
+            view = combo.view()
+            fm = combo.fontMetrics()
+            longest = max(
+                (fm.horizontalAdvance(_label(n, info_map.get(n))) for n in names),
+                default=200,
+            )
+            # Cap at 900 px so it doesn't fly off-screen on small displays.
+            view.setMinimumWidth(min(longest + 40, 900))
+            # Show as many items as possible without truncating vertically.
+            view.setMaximumHeight(min(36 * len(names) + 8, 480))
+            # Tooltip on the combo itself reflects the current selection so
+            # the user can verify their pick without opening the dropdown.
+            combo.currentIndexChanged.connect(
+                lambda _idx, c=combo: c.setToolTip(c.currentText())
+            )
             if current:
                 for i in range(combo.count()):
                     if combo.itemData(i) == current:
@@ -573,6 +610,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     # Editable combos preserve free-text entries even if not in
                     # the introspected list.
                     combo.setEditText(current)
+            combo.setToolTip(combo.currentText())
 
         combined_slow = {**bvars, **(svars or {})}
         fill(self.vm_neural, list(bvars.keys()), bvars, vm.neural)
