@@ -435,13 +435,18 @@ def _enumerate_struct_fields(parent: str, struct_val: Any, out: dict[str, dict[s
 
 def _describe(name: str, v: Any, out: dict[str, dict[str, Any]]) -> None:
     if isinstance(v, np.ndarray):
-        out[name] = {"shape": tuple(v.shape), "dtype": str(v.dtype), "kind": "array"}
+        # ndarrays with dtype=object are usually cell arrays of variable-
+        # length sub-arrays; treat them as sequences so downstream pickers
+        # don't try to use them as numeric traces.
+        kind = "sequence" if v.dtype == object else "array"
+        out[name] = {"shape": tuple(v.shape), "dtype": str(v.dtype), "kind": kind}
     elif isinstance(v, (int, float, bool, np.floating, np.integer)):
         out[name] = {"shape": (), "dtype": type(v).__name__, "kind": "scalar"}
     elif isinstance(v, (list, tuple)):
         try:
             arr = np.asarray(v)
-            out[name] = {"shape": tuple(arr.shape), "dtype": str(arr.dtype), "kind": "array"}
+            kind = "sequence" if arr.dtype == object else "array"
+            out[name] = {"shape": tuple(arr.shape), "dtype": str(arr.dtype), "kind": kind}
         except Exception:
             out[name] = {"shape": (len(v),), "dtype": "sequence", "kind": "sequence"}
     elif isinstance(v, dict):
@@ -543,33 +548,58 @@ def autopopulate_var_map(
     # slowwave: in-blanked variable first, else external file.
     # Prefer name-matches ("slow" / "sw" / "wave" / "lfp"), but fall back to
     # the longest 1-D array in the slow-wave file if nothing obvious turns up.
-    def _pick_sw(vars_: dict[str, dict[str, Any]], allow_longest_array: bool) -> str:
-        """Pick a slow-wave variable.  Always prefer arrays whose name hints at
-        slow-wave content.  Only fall through to "longest array" when the
-        caller says it's OK (true for a dedicated slow-wave file, false for
-        in-blanked search because the largest array there is the neural signal).
+    def _is_1d_numeric(v: dict) -> bool:
+        if v.get("kind") != "array":
+            return False
+        # Reject object/dict/sequence dtypes -- they are usually nested
+        # structs or ragged cell arrays that can't be stacked into a 1-D
+        # trace.
+        dtype = str(v.get("dtype", "")).lower()
+        if dtype in ("object", "dict", "sequence", "str"):
+            return False
+        shape = v.get("shape", ())
+        if len(shape) == 1:
+            return shape[0] > 0
+        if len(shape) == 2 and 1 in shape:
+            return max(shape) > 0
+        return False
+
+    def _length(v: dict) -> int:
+        shape = v.get("shape", ())
+        return max(shape) if shape else 0
+
+    def _pick_sw(vars_: dict[str, dict[str, Any]], allow_longest_array: bool, min_length: int = 100) -> str:
+        """Pick a slow-wave variable.
+
+        Strategy:
+          1. Among entries whose **name** hints at slow-wave content
+             (slow / wave / lfp / trace / filtered), keep only those that
+             are 1-D numeric arrays at least ``min_length`` samples long;
+             pick the LONGEST -- this avoids 30-sample "per-segment
+             summary" fields like ``slowWaves.amplitudes`` getting picked
+             over the real trace ``slowWaves.trace``.
+          2. If nothing name-matches and ``allow_longest_array`` is True
+             (dedicated slow-wave file), pick the longest 1-D numeric
+             array overall.
+          3. Otherwise return "" (no autopopulation).
         """
-        name_hits = [
-            k for k, v in vars_.items()
-            if v.get("kind") == "array"
-            and any(t in k.lower() for t in ("slow", "wave", "lfp", "trace"))
-        ]
-        if name_hits:
-            return name_hits[0]
+        candidates = {
+            k: v for k, v in vars_.items()
+            if _is_1d_numeric(v)
+            and any(t in k.lower() for t in ("slow", "wave", "lfp", "trace", "filtered"))
+            and _length(v) >= min_length
+        }
+        if candidates:
+            return max(candidates, key=lambda k: _length(candidates[k]))
         if not allow_longest_array:
             return ""
         best, best_size = "", 0
         for k, v in vars_.items():
-            if v.get("kind") != "array":
+            if not _is_1d_numeric(v):
                 continue
-            shape = v.get("shape", ())
-            if len(shape) == 1 and shape[0] > best_size:
-                best, best_size = k, shape[0]
-            elif len(shape) == 2:
-                rows, cols = shape
-                length = max(rows, cols)
-                if length > best_size and min(rows, cols) <= 4:
-                    best, best_size = k, length
+            n = _length(v)
+            if n > best_size and n >= min_length:
+                best, best_size = k, n
         return best
 
     vm.slowwave = _pick_sw(blanked_vars, allow_longest_array=False) or (

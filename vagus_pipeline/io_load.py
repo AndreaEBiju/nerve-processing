@@ -205,6 +205,72 @@ def _rpeak_to_samples(values, units: str, fs: float, var_name: str = "rpeak_time
     raise ValueError(f"Unknown rpeak_units: {units}")
 
 
+def _coerce_slowwave(values, n_samples: int, var_name: str) -> np.ndarray | None:
+    """Turn the resolved slow-wave variable into a 1-D float32 trace.
+
+    Same defensive idea as :func:`_rpeak_to_samples`: surface a clear
+    error pointing at the chosen variable when it's a struct, a ragged
+    cell array, a multi-dim matrix, or way too short to plausibly be a
+    slow-wave trace.  When the length is reasonable (within 1% of
+    neural length / 10000) we linearly resample to ``n_samples``; when
+    it's wildly off we refuse rather than silently producing garbage.
+    """
+    try:
+        arr = np.asarray(values)
+    except Exception as e:
+        raise ValueError(
+            f"Slow-wave variable '{var_name}' could not be interpreted as a numeric array: "
+            f"got type={type(values).__name__}.  Pick a 1-D array of samples (e.g. 'slowWaves.trace')."
+        ) from e
+
+    if arr.dtype == object:
+        sample = arr.flat[0] if arr.size else None
+        descr = f"first element type={type(sample).__name__}"
+        if hasattr(sample, "shape"):
+            descr += f", shape={sample.shape}"
+        raise ValueError(
+            f"Slow-wave variable '{var_name}' has dtype=object "
+            f"(probably a struct or cell array; {descr}).  "
+            f"Pick a variable that is a 1-D numeric array directly "
+            f"(e.g. 'slowWaves.trace' rather than the wrapping struct)."
+        )
+
+    if arr.ndim > 2 or (arr.ndim == 2 and 1 not in arr.shape):
+        raise ValueError(
+            f"Slow-wave variable '{var_name}' has shape {arr.shape}; expected a 1-D "
+            f"array (or 2-D with one axis = 1) of slow-wave samples."
+        )
+
+    sw = arr.astype(np.float32, copy=False).ravel()
+
+    # Sanity-check the length.  A real slow-wave trace is sampled either
+    # at the neural fs (sw.size == n_samples) or at a lower fs but still
+    # proportional to recording length.  A "30 sample" pick is almost
+    # certainly a per-segment summary, not a trace.
+    if sw.size < 100:
+        raise ValueError(
+            f"Slow-wave variable '{var_name}' has length {sw.size}; that's too short to be "
+            f"a slow-wave trace (neural length = {n_samples}).  This is almost certainly a "
+            f"summary field; pick a longer variable -- typically '<struct>.trace' or '<struct>.signal'."
+        )
+    if sw.size < n_samples / 10000:
+        raise ValueError(
+            f"Slow-wave variable '{var_name}' has length {sw.size} but neural length is {n_samples}. "
+            f"That ratio ({sw.size / n_samples:.2e}) is too extreme to be a real slow-wave trace; "
+            f"refusing to linearly upsample garbage.  Pick the actual signal trace."
+        )
+
+    if sw.size != n_samples:
+        log.warning(
+            "Slow-wave length %d != neural length %d (ratio %.3g); resampling linearly to match.",
+            sw.size, n_samples, sw.size / n_samples,
+        )
+        x_old = np.linspace(0.0, 1.0, sw.size, endpoint=False)
+        x_new = np.linspace(0.0, 1.0, n_samples, endpoint=False)
+        sw = np.interp(x_new, x_old, sw).astype(np.float32)
+    return sw
+
+
 def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig) -> Recording:
     """Load a recording pair and normalize to a :class:`Recording` instance."""
     if not var_map.neural:
@@ -246,21 +312,15 @@ def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig)
 
     slowwave = None
     if var_map.slowwave:
+        sw_raw: Any | None = None
         if _contains(bdata, var_map.slowwave):
-            sw = np.asarray(_resolve(bdata, var_map.slowwave)).astype(np.float32, copy=False).ravel()
-            slowwave = sw
+            sw_raw = _resolve(bdata, var_map.slowwave)
         elif pair.slowwave_path is not None:
             swdata = _read_any(pair.slowwave_path)
             if _contains(swdata, var_map.slowwave):
-                slowwave = np.asarray(_resolve(swdata, var_map.slowwave)).astype(np.float32, copy=False).ravel()
-        if slowwave is not None and slowwave.size != n_samples:
-            log.warning(
-                "Slow-wave length %d != neural length %d; resampling linearly.",
-                slowwave.size, n_samples,
-            )
-            x_old = np.linspace(0.0, 1.0, slowwave.size, endpoint=False)
-            x_new = np.linspace(0.0, 1.0, n_samples, endpoint=False)
-            slowwave = np.interp(x_new, x_old, slowwave).astype(np.float32)
+                sw_raw = _resolve(swdata, var_map.slowwave)
+        if sw_raw is not None:
+            slowwave = _coerce_slowwave(sw_raw, n_samples, var_map.slowwave)
 
     stim_events: list[tuple[int, str]] | None = None
     if var_map.stim_events and _contains(bdata, var_map.stim_events):
