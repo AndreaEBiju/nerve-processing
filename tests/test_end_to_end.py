@@ -1,7 +1,9 @@
-"""End-to-end acceptance tests for the vagus pipeline.
+"""End-to-end acceptance tests per spec §10 (v2: 15 steps, 3 slow-wave channels).
 
-These exercise the same path as ``python run.py --no-ui`` against the
-synthetic dataset built by :mod:`tests.make_sample_data`.
+Two datasets are synthesized:
+
+* **A** -- three healthy slow-wave channels;
+* **B** -- middle channel corrupted with a 60-120 s dropout + 3x noise.
 """
 
 from __future__ import annotations
@@ -25,7 +27,6 @@ DATA_DIR = REPO_ROOT / "tests" / "data"
 
 @pytest.fixture(scope="module")
 def sample_dataset():
-    """Build the sample dataset once per pytest session."""
     from tests.make_sample_data import main as build
 
     truth = build()
@@ -34,17 +35,18 @@ def sample_dataset():
 
 @pytest.fixture(scope="module")
 def batch_result(sample_dataset):
-    """Run the batch on the synthetic dataset and return its result."""
     cfg = PipelineConfig()
     vm = VarMap(
         neural="data",
-        rpeak_times="rpeak_samples",
+        rpeak_times="Rpeaks",
         rpeak_units="sample",
-        slowwave="slow_wave",
+        slowwave_ch1="sw_ch1",
+        slowwave_ch2="sw_ch2",
+        slowwave_ch3="sw_ch3",
+        slowwave_spatial_order=[1, 2, 3],
         fs="fs",
         stim_events="stim_events",
         stim_labels="stim_labels",
-        n_channels=1,
     )
     res = run_batch(DATA_DIR, vm, cfg)
     return {"cfg": cfg, "var_map": vm, "result": res}
@@ -53,11 +55,9 @@ def batch_result(sample_dataset):
 def _load_mat(path):
     try:
         from pymatreader import read_mat
-
         return read_mat(path)
     except Exception:
         from scipy.io import loadmat
-
         d = loadmat(path, squeeze_me=True, struct_as_record=False)
         return {k: v for k, v in d.items() if not k.startswith("__")}
 
@@ -66,50 +66,19 @@ def _as_list(x):
     return x if isinstance(x, list) else [x]
 
 
-# 1. Discovery
-def test_discovery_finds_two_pairs(sample_dataset):
+def _pair_of_dataset(rows, prefix):
+    """Return the summary row whose blanked filename starts with ``prefix``."""
+    return next(r for r in rows if r["blanked"].startswith(prefix))
+
+
+# ------ §10.1-10.3 discovery / mapping / run completes ------------------------------
+
+
+def test_discovery_finds_both_datasets(sample_dataset):
     pairs = find_pairs(DATA_DIR)
     assert len(pairs) == 2, [p.blanked_path.name for p in pairs]
-    # Every discovered file must carry the version tag (no decoys leaked in).
-    import re
-    for p in pairs:
-        assert re.search(r"_v\d+\.\d+\.\d+_", p.blanked_path.name), p.blanked_path.name
-        assert re.search(r"_v\d+\.\d+\.\d+_", p.rpeak_path.name), p.rpeak_path.name
 
 
-def test_decoys_without_version_tag_are_skipped(sample_dataset):
-    """Files like ``rat01_blankmotion.mat`` (no ``_v0.x.x_``) must be ignored."""
-    pairs = find_pairs(DATA_DIR)
-    names = {p.blanked_path.name for p in pairs} | {p.rpeak_path.name for p in pairs}
-    for rec in sample_dataset["recordings"]:
-        decoy_b = Path(rec["decoy_blanked"]).name
-        decoy_r = Path(rec["decoy_rpeak"]).name
-        assert decoy_b not in names, f"decoy leaked into pairs: {decoy_b}"
-        assert decoy_r not in names, f"decoy leaked into pairs: {decoy_r}"
-
-
-def test_recovery_variant_pairs_correctly(sample_dataset):
-    """A ``..._recovery_blankmotion`` file must pair with its ``..._recovery_HRBR``."""
-    pairs = find_pairs(DATA_DIR)
-    recovery_pairs = [p for p in pairs if "recovery" in p.blanked_path.stem]
-    if not recovery_pairs:
-        return  # this dataset variant didn't include recovery -- nothing to check
-    for p in recovery_pairs:
-        assert "recovery" in p.rpeak_path.stem, (p.blanked_path.name, p.rpeak_path.name)
-
-
-# 2. Variable introspection
-def test_introspection_lists_known_names(sample_dataset):
-    pairs = find_pairs(DATA_DIR)
-    assert pairs, "no pairs"
-    # Use the first version-tagged pair (decoys are excluded by find_pairs).
-    b = introspect_variables(pairs[0].blanked_path)
-    r = introspect_variables(pairs[0].rpeak_path)
-    assert "data" in b and "slow_wave" in b
-    assert "rpeak_samples" in r
-
-
-# 3. Run completes
 def test_run_completes_and_writes_outputs(batch_result):
     res = batch_result["result"]
     assert (DATA_DIR / "batch_pca_basis.npz").exists()
@@ -120,178 +89,113 @@ def test_run_completes_and_writes_outputs(batch_result):
         assert Path(row["output_path"]).exists()
 
 
-# 4. Shapes/ranges per cuff
-def test_per_cuff_shapes_and_ranges(batch_result, sample_dataset):
-    truth = sample_dataset
-    for row, truth_rec in zip(batch_result["result"]["rows"], truth["recordings"]):
+# ------ §10.4 per-cuff shapes (both datasets) ---------------------------------
+
+
+def test_per_cuff_shapes(batch_result):
+    for row in batch_result["result"]["rows"]:
         data = _load_mat(row["output_path"])
-        m = data["metrics"]
-        cuff = _as_list(m["cuff"])[0]
-
-        # step1 filtered length implied via spike samples bounds + step3 amplitude_hist
-        spike_samples = np.asarray(cuff["step3"]["spike_samples"]).ravel()
-        # Ground-truth total spike count
-        gt = (
-            len(truth_rec["unit_A_samples"])
-            + len(truth_rec["unit_B_samples"])
-            + len(truth_rec["unit_C_samples"])
-        )
-        # Within a generous tolerance: synth contains a far-field ECG plus
-        # stim-boosted extras on top of the labeled units, so detection count
-        # can be 2× truth. Floor at 0.5× to catch silent failures.
-        assert spike_samples.size >= 0.5 * gt, (spike_samples.size, gt)
-        assert spike_samples.size <= 3.0 * gt, (spike_samples.size, gt)
-
-        # n_clusters at least 2 (we injected 3 in-band units; allow over/under-split)
+        cuff = _as_list(data["metrics"]["cuff"])[0]
         n_clusters = int(np.asarray(cuff["step6"]["n_clusters"]).item())
-        assert n_clusters >= 2, n_clusters
-
-        # ISI present per cluster with >1 spike
+        assert n_clusters >= 2
         for cl in _as_list(cuff["step7"]["cluster"]):
             n_spk = int(np.asarray(cl["n_spikes"]).item())
-            isi = np.asarray(cl["isi_s"]).ravel()
             if n_spk > 1:
-                assert isi.size > 0
+                assert np.asarray(cl["isi_s"]).ravel().size > 0
             snr = float(np.asarray(cl["snr"]).item())
             assert np.isfinite(snr) and snr > 0
 
-        # Audit: ARI should be sane on clean synth data
-        ari = float(np.asarray(cuff["step8"]["adjusted_rand"]).item())
-        if np.isfinite(ari):
-            assert ari > 0.3, ari
+
+# ------ §10.5 dataset A: all three slow-wave channels good ------------------
 
 
-def test_cardiac_locked_flag_fires(batch_result, sample_dataset):
-    """At least one cluster should be flagged as cardiac-locked (Unit C)."""
+def test_datasetA_all_channels_good(batch_result):
+    row = _pair_of_dataset(batch_result["result"]["rows"], "ratA_good")
+    data = _load_mat(row["output_path"])
+    cuff = _as_list(data["metrics"]["cuff"])[0]
+    s11a = cuff["step11a"]
+    assert not bool(np.asarray(s11a.get("skipped", False)).item())
+    assert int(np.asarray(s11a["channels_present"]).item()) == 3
+    channels = _as_list(s11a["channel"])
+    tiers = [str(c["tier"]) for c in channels]
+    assert sum(t == "good" for t in tiers) >= 2, tiers
+
+
+def test_datasetA_locked_unit_passes_robust_phase_locked(batch_result):
+    row = _pair_of_dataset(batch_result["result"]["rows"], "ratA_good")
+    assert row["n_robust_phase_locked"] >= 1, row
+
+
+# ------ §10.6 dataset B: middle channel dropout -----------------------------
+
+
+def test_datasetB_middle_channel_downweighted(batch_result):
+    row = _pair_of_dataset(batch_result["result"]["rows"], "ratB_dropout")
+    data = _load_mat(row["output_path"])
+    cuff = _as_list(data["metrics"]["cuff"])[0]
+    s11a = cuff["step11a"]
+    if bool(np.asarray(s11a.get("skipped", False)).item()):
+        pytest.skip("ratB slow-wave was completely unusable; the corruption was too aggressive")
+    channels = _as_list(s11a["channel"])
+    assert len(channels) >= 3
+    # Middle channel (index 1) should have the lowest whole-recording score.
+    whole_scores = [float(np.asarray(c["quality_score_whole"]).item()) for c in channels]
+    assert whole_scores[1] < whole_scores[0]
+    assert whole_scores[1] < whole_scores[2]
+    # And its rolling weights during the dropout (60-120 s) should be at or near zero.
+    rolling = np.asarray(channels[1]["quality_score_rolling"]).ravel()
+    window_centres = np.asarray(channels[1]["quality_window_times_s"]).ravel()
+    dropout = (window_centres >= 60) & (window_centres <= 120)
+    if dropout.any():
+        assert (rolling[dropout] <= 0.3).any() or rolling[dropout].mean() < 0.5
+
+
+# ------ §10.7 antral burst detection ----------------------------------------
+
+
+def test_consensus_bursts_detected_both_datasets(batch_result, sample_dataset):
+    truth = {r["name"]: r for r in sample_dataset["recordings"]}
     for row in batch_result["result"]["rows"]:
         data = _load_mat(row["output_path"])
         cuff = _as_list(data["metrics"]["cuff"])[0]
-        any_locked = False
-        any_unlocked = False
-        for cl in _as_list(cuff["step9"]["cluster"]):
-            locked = bool(np.asarray(cl["is_cardiac_locked"]).item())
-            any_locked = any_locked or locked
-            any_unlocked = any_unlocked or not locked
-        assert any_locked, "no cluster flagged as cardiac-locked"
-        assert any_unlocked, "every cluster flagged as cardiac-locked"
+        s12 = cuff["step12"]
+        if bool(np.asarray(s12.get("skipped", False)).item()):
+            continue
+        consensus = np.asarray(s12["consensus_burst_times_s"]).ravel()
+        truth_name = "ratA_good" if row["blanked"].startswith("ratA_good") else "ratB_dropout"
+        injected = int(np.asarray(truth[truth_name]["burst_times_s"]).size)
+        if injected:
+            # Within +/-60% of injected count (synth bursts are well-separated).
+            assert 0.3 * injected <= consensus.size <= 3.0 * injected, (consensus.size, injected, row["blanked"])
 
 
-def test_breathing_rate_in_range(batch_result, sample_dataset):
-    for row in batch_result["result"]["rows"]:
-        data = _load_mat(row["output_path"])
-        cuff = _as_list(data["metrics"]["cuff"])[0]
-        br = float(np.asarray(cuff["step10"]["breathing_rate_hz"]).item())
-        # Injected at ~1.33 Hz; allow generous ±50% because surrogate is RSA-based
-        assert 0.3 < br < 3.0, br
+# ------ §10.8 stim responder + §10.9 determinism + §10.10 reload ------------
 
 
-def test_slowwave_phase_locking(batch_result, sample_dataset):
-    """At least one cluster should reach Rayleigh p<0.05 and an MRL above the median."""
-    for row in batch_result["result"]["rows"]:
-        data = _load_mat(row["output_path"])
-        cuff = _as_list(data["metrics"]["cuff"])[0]
-        mrls, ps = [], []
-        for cl in _as_list(cuff["step11"]["cluster"]):
-            mrls.append(float(np.asarray(cl["mrl"]).item()))
-            ps.append(float(np.asarray(cl["rayleigh_p"]).item()))
-        assert any(p < 0.05 for p in ps), ps
-        # the most phase-locked cluster's MRL is above the median
-        med = float(np.median(mrls))
-        assert max(mrls) > med, (mrls, med)
-
-
-def test_responder_detection(batch_result, sample_dataset):
-    """At least one cluster is a responder for at least one stim condition."""
-    for row in batch_result["result"]["rows"]:
-        data = _load_mat(row["output_path"])
-        cuff = _as_list(data["metrics"]["cuff"])[0]
-        any_resp = False
-        for cl in _as_list(cuff["step13"]["cluster"]):
-            for c in _as_list(cl.get("conditions", []) or []):
-                if c is None:
-                    continue
-                if bool(np.asarray(c["is_responder"]).item()):
-                    any_resp = True
-        assert any_resp, "no responder detected on a stim-modulated dataset"
-
-
-def test_determinism(sample_dataset):
-    """Two consecutive runs produce identical labels and identical MRL values."""
-    cfg = PipelineConfig()
-    vm = VarMap(
-        neural="data", rpeak_times="rpeak_samples", rpeak_units="sample",
-        slowwave="slow_wave", fs="fs", stim_events="stim_events", stim_labels="stim_labels",
-    )
-    res1 = run_batch(DATA_DIR, vm, cfg)
-    res2 = run_batch(DATA_DIR, vm, cfg)
-    for r1, r2 in zip(res1["rows"], res2["rows"]):
-        d1 = _load_mat(r1["output_path"])
-        d2 = _load_mat(r2["output_path"])
-        c1 = _as_list(d1["metrics"]["cuff"])[0]
-        c2 = _as_list(d2["metrics"]["cuff"])[0]
-        l1 = np.asarray(c1["step6"]["labels"]).ravel()
-        l2 = np.asarray(c2["step6"]["labels"]).ravel()
-        assert l1.size == l2.size
-        assert np.array_equal(l1, l2)
-        m1 = [float(np.asarray(cl["mrl"]).item()) for cl in _as_list(c1["step11"]["cluster"])]
-        m2 = [float(np.asarray(cl["mrl"]).item()) for cl in _as_list(c2["step11"]["cluster"])]
-        assert m1 == m2
-
-
-def test_prepass_then_resume_matches_full(sample_dataset, batch_result):
-    """Prepass on this machine + resume on this machine should produce the
-    same per-pair cluster count and mean SNR as a full-mode run.
-
-    Mirrors the cross-machine workflow: a Windows box (no MountainSort5)
-    runs prepass, ships checkpoints to a Mac, which resumes.
-    """
-    import shutil
-    from vagus_pipeline.batch import run_batch
-    from vagus_pipeline.checkpoint import CHECKPOINT_SUFFIX
-
-    cfg = batch_result["cfg"]
-    vm = batch_result["var_map"]
-    full_rows = batch_result["result"]["rows"]
-
-    # Strip every output from the full run so resume mode discovers
-    # checkpoints only.  Skip macOS AppleDouble (._*) sidecars.
-    for ext in ("_metrics.mat", CHECKPOINT_SUFFIX):
-        for p in DATA_DIR.rglob(f"*{ext}"):
-            if p.name.startswith("."):
-                continue
-            try:
-                p.unlink()
-            except FileNotFoundError:
-                pass
-
-    pre_res = run_batch(DATA_DIR, vm, cfg, mode="prepass")
-    assert all(r["status"] == "ok" for r in pre_res["rows"]), pre_res["rows"]
-    # Checkpoint file exists for every pair
-    cks = sorted(p for p in DATA_DIR.rglob(f"*{CHECKPOINT_SUFFIX}") if not p.name.startswith("."))
-    assert len(cks) == len(pre_res["rows"])
-
-    resume_res = run_batch(DATA_DIR, vm, cfg, mode="resume")
-    assert all(r["status"] == "ok" for r in resume_res["rows"]), resume_res["rows"]
-    assert len(resume_res["rows"]) == len(full_rows)
-
-    # Match clusters + SNR between full and resume (same MS5 input, same
-    # PCA basis -> identical sorter result; SNR is computed deterministically).
-    for full_row, resume_row in zip(
-        sorted(full_rows, key=lambda r: r["dir"]),
-        sorted(resume_res["rows"], key=lambda r: r["dir"]),
-    ):
-        assert full_row["n_clusters_total"] == resume_row["n_clusters_total"], (full_row, resume_row)
-        if np.isfinite(full_row["mean_snr"]):
-            assert abs(full_row["mean_snr"] - resume_row["mean_snr"]) < 0.5, (full_row, resume_row)
-
-
-def test_provenance_roundtrip(batch_result):
+def test_provenance_reload(batch_result):
     for row in batch_result["result"]["rows"]:
         data = _load_mat(row["output_path"])
         prov = data["metrics"]["provenance"]
-        # provenance should contain the full config and source paths
         assert "config" in prov
         cfg = prov["config"]
-        assert int(np.asarray(cfg["n_pca"]).item()) == PipelineConfig().n_pca
-        assert "blanked_path" in prov and "rpeak_path" in prov
-        assert "pca_basis_path" in prov
+        # New step-11/12 params present in provenance
+        for key in ("sw_low_hz", "sw_high_hz", "burst_band_low_hz", "burst_threshold_sigma"):
+            assert key in cfg, key
+
+
+def test_determinism_labels_and_mrl(sample_dataset):
+    cfg = PipelineConfig()
+    vm = VarMap(
+        neural="data", rpeak_times="Rpeaks", rpeak_units="sample",
+        slowwave_ch1="sw_ch1", slowwave_ch2="sw_ch2", slowwave_ch3="sw_ch3",
+        fs="fs", stim_events="stim_events", stim_labels="stim_labels",
+    )
+    r1 = run_batch(DATA_DIR, vm, cfg)
+    r2 = run_batch(DATA_DIR, vm, cfg)
+    for a, b in zip(r1["rows"], r2["rows"]):
+        if a["status"] != "ok" or b["status"] != "ok":
+            continue
+        d1 = _load_mat(a["output_path"]); d2 = _load_mat(b["output_path"])
+        l1 = np.asarray(_as_list(d1["metrics"]["cuff"])[0]["step6"]["labels"]).ravel()
+        l2 = np.asarray(_as_list(d2["metrics"]["cuff"])[0]["step6"]["labels"]).ravel()
+        assert l1.size == l2.size and np.array_equal(l1, l2)

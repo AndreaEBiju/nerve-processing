@@ -201,6 +201,9 @@ def run_batch(
             "n_clusters_total": 0,
             "mean_snr": float("nan"),
             "n_responders": 0,
+            "n_robust_phase_locked": 0,
+            "n_burst_correlated": 0,
+            "sw_channels_usable": 0,
             "output_path": "",
             "mode": mode,
         }
@@ -220,23 +223,44 @@ def run_batch(
                 results = run_pipeline_on_pair(pair, var_map, pca_basis, cfg)
                 results["provenance"]["pca_basis_path"] = str(basis_path)
                 out_path = save_mat(results, pair.dir, pair.common_stem())
+                try:
+                    from .plots import save_pair_diagnostics
+                    save_pair_diagnostics(results, pair.dir, pair.common_stem())
+                except Exception as e:
+                    log.warning("Diagnostic plots failed for %s: %s", pair.blanked_path.name, e)
                 row["output_path"] = str(out_path)
                 row["n_cuffs"] = int(results["n_cuffs"])
                 spikes_tot, clust_tot, snrs, resp_tot = 0, 0, [], 0
+                n_robust_pl, n_burst_corr, sw_usable = 0, 0, 0
                 for cuff in results["cuff"]:
                     spikes_tot += int(np.asarray(cuff["step3"]["spike_samples"]).size)
                     clust_tot += int(cuff["step6"]["n_clusters"])
                     for cl in cuff["step7"]["cluster"]:
                         if np.isfinite(cl["snr"]):
                             snrs.append(float(cl["snr"]))
-                    for cl in cuff["step13"]["cluster"]:
+                    # Step 14: responders
+                    for cl in cuff["step14"]["cluster"]:
                         for c in cl.get("conditions", []) or []:
                             if c.get("is_responder"):
                                 resp_tot += 1
+                    # Step 11b: robust phase-locked clusters
+                    if not cuff["step11b"].get("skipped"):
+                        for cl in cuff["step11b"]["cluster"]:
+                            if cl.get("robust_phase_locked"):
+                                n_robust_pl += 1
+                        sw_usable = max(sw_usable, int(cuff["step11a"].get("channels_present", 0)))
+                    # Step 12: burst-correlated clusters (efferent or afferent tag)
+                    if not cuff["step12"].get("skipped"):
+                        for cl in cuff["step12"]["cluster"]:
+                            if cl.get("direction_tag") in ("efferent-like", "afferent-like"):
+                                n_burst_corr += 1
                 row["n_spikes_total"] = spikes_tot
                 row["n_clusters_total"] = clust_tot
                 row["mean_snr"] = float(np.mean(snrs)) if snrs else float("nan")
                 row["n_responders"] = resp_tot
+                row["n_robust_phase_locked"] = n_robust_pl
+                row["n_burst_correlated"] = n_burst_corr
+                row["sw_channels_usable"] = sw_usable
         except Exception as e:
             row["status"] = "failed"
             row["reason"] = f"{type(e).__name__}: {e}"
@@ -301,6 +325,9 @@ def _run_batch_resume(root: Path, cfg: PipelineConfig, progress_cb: Any | None) 
             "n_clusters_total": 0,
             "mean_snr": float("nan"),
             "n_responders": 0,
+            "n_robust_phase_locked": 0,
+            "n_burst_correlated": 0,
+            "sw_channels_usable": 0,
             "output_path": "",
             "mode": "resume",
             "checkpoint_path": str(ck_path),
@@ -312,12 +339,19 @@ def _run_batch_resume(root: Path, cfg: PipelineConfig, progress_cb: Any | None) 
             row["rpeak"] = Path(prov.get("rpeak_path", "")).name
             row["slowwave"] = Path(prov.get("slowwave_path", "")).name if prov.get("slowwave_path") else ""
 
+            # Pair-level slow-wave artefacts.  Checkpoint stores
+            # ``slowwave`` (single trace, legacy) or a list of channels
+            # under ``slowwave_channels``.  Both paths feed
+            # ``run_pair_level_slowwave``.
+            sw_channels = data.get("slowwave_channels") or (
+                [data["slowwave"]] if data.get("slowwave") is not None and data["slowwave"].size > 0 else []
+            )
+            from .pipeline import run_pair_level_slowwave
+            swa = run_pair_level_slowwave(sw_channels, data["fs"], cfg)
+
             cuff_results: list[dict[str, Any]] = []
             for k, cuff_data in enumerate(data["cuffs"]):
                 log.info("[%s] Resuming cuff %d/%d", ck_path.name, k + 1, data["n_cuffs"])
-                # Re-project waveforms through the resumed basis so the feature
-                # space matches what Pass 1 produced even if the saved
-                # pca_feats were computed against the same basis.
                 from .features import project_pca
                 pca_feats = project_pca(cuff_data["waveforms"], pca_basis)
                 cuff_data["pca_feats"] = pca_feats
@@ -326,7 +360,8 @@ def _run_batch_resume(root: Path, cfg: PipelineConfig, progress_cb: Any | None) 
                         prepass=cuff_data,
                         n_samples=data["n_samples"],
                         rpeak_samples=data["rpeak_samples"],
-                        slowwave=data["slowwave"],
+                        slowwave_channels=sw_channels,
+                        slowwave_artifacts=swa,
                         stim_events=data["stim_events"],
                         fs=data["fs"],
                         cfg=cfg,

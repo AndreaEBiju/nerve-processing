@@ -113,8 +113,14 @@ def save_checkpoint(
         "n_cuffs": np.asarray(len(recording.neural)),
         "rpeak_samples": recording.rpeak_samples,
     }
-    if recording.slowwave is not None:
-        arrays["slowwave"] = recording.slowwave
+    # Save EVERY slow-wave channel in a single stacked array so that on
+    # resume the same N-channel layout (and Step 11a quality scoring) can
+    # be reproduced.  The legacy single-channel ``slowwave`` key is also
+    # written for back-compat with older resumers.
+    if recording.slowwave_channels:
+        arrays["slowwave_channels_stacked"] = np.stack(recording.slowwave_channels, axis=0)
+        arrays["n_slowwave_channels"] = np.asarray(len(recording.slowwave_channels))
+        arrays["slowwave"] = recording.slowwave_channels[0]  # legacy alias
     if recording.stim_events:
         arrays["stim_samples"] = np.asarray(
             [s for s, _ in recording.stim_events], dtype=np.int64
@@ -196,6 +202,11 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
         "n_cuffs": n_cuffs,
         "rpeak_samples": z["rpeak_samples"],
         "slowwave": z["slowwave"] if "slowwave" in z.files else None,
+        "slowwave_channels": (
+            [z["slowwave_channels_stacked"][i] for i in range(int(z["n_slowwave_channels"]))]
+            if "slowwave_channels_stacked" in z.files
+            else ([z["slowwave"]] if "slowwave" in z.files else [])
+        ),
         "stim_events": stim_events,
         "cuffs": cuffs,
     }

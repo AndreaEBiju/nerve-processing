@@ -94,7 +94,8 @@ class RecordingPair:
     dir: Path
     blanked_path: Path
     rpeak_path: Path
-    slowwave_path: Path | None = None
+    slowwave_path: Path | None = None  # legacy single file (kept for back-compat)
+    slowwave_paths: list[Path] | None = None  # up to 3 separate slow-wave files
     var_map: VarMap | None = None
     status: str = "ok"
     note: str = ""
@@ -616,6 +617,42 @@ def autopopulate_var_map(
     )
     if not vm.slowwave:
         vm.slowwave = None
+
+    # New 3-channel slot autopopulation.  Prefer name-matched 1-D candidates
+    # from the slow-wave file (or the blanked file as fallback).  Look for
+    # tokens ch1/ch2/ch3, prox/mid/dist, _1/_2/_3 to pick deterministically.
+    def _pick_sw_slot(slot_idx_1b: int) -> str:
+        pool = slowwave_vars if slowwave_vars else blanked_vars
+        if not pool:
+            return ""
+        slot_aliases = {
+            1: ("ch1", "_1", "prox", "proximal"),
+            2: ("ch2", "_2", "mid", "middle"),
+            3: ("ch3", "_3", "dist", "distal"),
+        }
+        for tok in slot_aliases[slot_idx_1b]:
+            for k, v in pool.items():
+                if v.get("kind") == "array" and tok in k.lower():
+                    return k
+        # Fallback: the slot_idx-th candidate among all name-matched 1-D arrays.
+        candidates = [
+            k for k, v in pool.items()
+            if v.get("kind") == "array"
+            and any(t in k.lower() for t in ("slow", "wave", "lfp", "trace"))
+        ]
+        if slot_idx_1b - 1 < len(candidates):
+            return candidates[slot_idx_1b - 1]
+        return ""
+
+    vm.slowwave_ch1 = _pick_sw_slot(1) or None
+    vm.slowwave_ch2 = _pick_sw_slot(2) or None
+    vm.slowwave_ch3 = _pick_sw_slot(3) or None
+    # If two slots picked the SAME variable AND that variable is 2-D, assume
+    # it's a stacked multi-channel matrix and populate ch_indices.
+    if (vm.slowwave_ch1 and vm.slowwave_ch1 == vm.slowwave_ch2 == vm.slowwave_ch3):
+        sh = (slowwave_vars or blanked_vars).get(vm.slowwave_ch1, {}).get("shape", ())
+        if len(sh) == 2 and 3 in sh:
+            vm.slowwave_ch_indices = [0, 1, 2]
 
     # fs
     fs_hits = [k for k in blanked_vars if k.lower() in ("fs", "samplerate", "sample_rate", "sr")]

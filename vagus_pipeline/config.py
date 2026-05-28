@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+
+
+class SlowWaveUnusable(Exception):
+    """Raised when no slow-wave channel reaches the marginal quality tier
+    anywhere in the recording.  Step 11 + Step 12 are skipped for that
+    recording; downstream steps still run."""
 from typing import Any
 
 
@@ -49,9 +55,42 @@ class PipelineConfig:
     resp_band_low_hz: float = 0.1
     resp_band_high_hz: float = 3.0
 
-    # Step 11 slow wave
-    sw_low_hz: float = 0.01
-    sw_high_hz: float = 0.2
+    # ---------- Step 11 slow-wave (three antral channels, 0.5 cm spacing) ----------
+    sw_low_hz: float = 0.01           # phase-extraction bandpass low
+    sw_high_hz: float = 0.2           # phase-extraction bandpass high
+    sw_inband_low_hz: float = 0.04    # in-band SNR numerator band
+    sw_inband_high_hz: float = 0.15
+    sw_outband_low1_hz: float = 0.005
+    sw_outband_high1_hz: float = 0.04
+    sw_outband_low2_hz: float = 0.15
+    sw_outband_high2_hz: float = 0.5
+    sw_quality_window_s: float = 60.0
+    sw_quality_overlap_s: float = 30.0
+    sw_quality_good_threshold: float = 0.7
+    sw_quality_marginal_threshold: float = 0.3
+    sw_coherence_min: float = 0.5
+    sw_snr_norm_lo: float = 1.0
+    sw_snr_norm_hi: float = 10.0
+    sw_coherence_norm_lo: float = 0.3
+    sw_coherence_norm_hi: float = 0.9
+    sw_envcv_norm_lo: float = 1.0     # high CV -> bad
+    sw_envcv_norm_hi: float = 0.2     # low CV -> good (inverted)
+    sw_consistency_phase_spread_deg: float = 60.0
+    sw_per_channel_p_near: float = 0.10
+    sw_primary_p: float = 0.05
+    sw_common_mode_fs_hz: float = 10.0   # downsample target for common-mode storage
+
+    # ---------- Step 12 antral burst detection ----------
+    burst_band_low_hz: float = 1.0
+    burst_band_high_hz: float = 10.0
+    burst_threshold_sigma: float = 4.0
+    burst_min_duration_ms: float = 200.0
+    burst_min_channels: int = 2
+    burst_consensus_window_ms: float = 100.0  # tolerance for consensus across channels
+    burst_xcorr_window_s: float = 10.0
+    burst_xcorr_bin_s: float = 0.05
+    burst_peak_z_threshold: float = 3.0
+    burst_direction_min_lag_s: float = 0.5
 
     # Step 12 rates
     rate_bin_s: float = 2.0
@@ -77,6 +116,24 @@ class VarMap:
     neural: str = ""
     rpeak_times: str = ""
     rpeak_units: str = "sample"  # "sample" | "sec" | "ms"
+    # Three antral mucosal slow-wave channels (proximal -> middle -> distal).
+    # Each is either a separate variable name, the same variable with
+    # different ``_channel`` index, or empty if that electrode failed.
+    slowwave_ch1: str | None = None  # PROXIMAL
+    slowwave_ch2: str | None = None  # MIDDLE  (reference for propagation lag)
+    slowwave_ch3: str | None = None  # DISTAL
+    # If all three slow-wave names point at the SAME variable, this picks
+    # which column of the multi-channel matrix is ch1 / ch2 / ch3.
+    # Defaults to [0, 1, 2] for natural row-order.
+    slowwave_ch_indices: list[int] = field(default_factory=lambda: [0, 1, 2])
+    # User-confirmed spatial order along gastric long axis.  Default is
+    # the assignment as written (ch1=proximal, ch2=middle, ch3=distal).
+    # Changing this swaps which channel is treated as the propagation-lag
+    # reference (always the middle entry).
+    slowwave_spatial_order: list[int] = field(default_factory=lambda: [1, 2, 3])
+    # DEPRECATED: legacy single-channel slow-wave field, kept so old
+    # batch_varmap.json files still load.  If set and the ch1/ch2/ch3
+    # fields are empty, treated as slowwave_ch1 only (one-channel mode).
     slowwave: str | None = None
     fs: str | None = None
     stim_events: str | None = None

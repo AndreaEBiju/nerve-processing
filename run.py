@@ -59,7 +59,14 @@ def main(argv: list[str] | None = None) -> int:
             "every channel."
         ),
     )
-    parser.add_argument("--slowwave", default=None)
+    parser.add_argument("--slowwave", default=None, help="(legacy) single slow-wave variable")
+    parser.add_argument("--slowwave-ch1", dest="slowwave_ch1", default=None, help="Slow-wave channel 1 (PROXIMAL) variable name")
+    parser.add_argument("--slowwave-ch2", dest="slowwave_ch2", default=None, help="Slow-wave channel 2 (MIDDLE) variable name")
+    parser.add_argument("--slowwave-ch3", dest="slowwave_ch3", default=None, help="Slow-wave channel 3 (DISTAL) variable name")
+    parser.add_argument("--slowwave-indices", dest="slowwave_indices", default="0,1,2",
+                        help="When ch1/ch2/ch3 point to ONE multi-channel variable, picks which columns become channels (default '0,1,2').")
+    parser.add_argument("--slowwave-spatial-order", dest="slowwave_spatial", default="1,2,3",
+                        help="User-confirmed spatial order along gastric long axis (proximal -> distal), comma-separated 1-based channel numbers.  Default '1,2,3'.")
     parser.add_argument(
         "--slowwave-channel",
         dest="slowwave_channel",
@@ -135,10 +142,20 @@ def main(argv: list[str] | None = None) -> int:
             channel_indices = [int(s.strip()) for s in args.channels.split(",") if s.strip()]
         except ValueError:
             parser.error(f"--channels {args.channels!r} must be a comma-separated list of integers (e.g. 0,3)")
+    def _ints(s: str, fallback: list[int]) -> list[int]:
+        try:
+            return [int(x.strip()) for x in s.split(",") if x.strip()]
+        except ValueError:
+            return fallback
     var_map = VarMap(
         neural=args.neural,
         rpeak_times=args.rpeak,
         rpeak_units=args.units,
+        slowwave_ch1=args.slowwave_ch1,
+        slowwave_ch2=args.slowwave_ch2,
+        slowwave_ch3=args.slowwave_ch3,
+        slowwave_ch_indices=_ints(args.slowwave_indices, [0, 1, 2]),
+        slowwave_spatial_order=_ints(args.slowwave_spatial, [1, 2, 3]),
         slowwave=args.slowwave,
         fs=args.fs_var,
         stim_events=args.stim_events,

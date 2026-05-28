@@ -25,13 +25,25 @@ class Recording:
     neural: list[np.ndarray]  # one 1-D float array per cuff
     blanked_mask: list[np.ndarray]  # one bool array per cuff (True = blanked)
     rpeak_samples: np.ndarray
-    slowwave: np.ndarray | None
+    # Up to three antral slow-wave traces, ordered proximal -> middle ->
+    # distal AFTER spatial reordering by ``var_map.slowwave_spatial_order``.
+    # Length 0 (no slow wave at all), 1, 2, or 3.
+    slowwave_channels: list[np.ndarray]
     stim_events: list[tuple[int, str]] | None
     fs: float
     n_samples: int
 
+    # Backwards-compat alias so existing code that reads ``recording.slowwave``
+    # keeps working: returns the first available channel or None.
+    @property
+    def slowwave(self) -> np.ndarray | None:
+        return self.slowwave_channels[0] if self.slowwave_channels else None
+
     def cuff_count(self) -> int:
         return len(self.neural)
+
+    def n_slowwave_channels(self) -> int:
+        return len(self.slowwave_channels)
 
 
 def _read_any(path: Path) -> dict[str, Any]:
@@ -286,6 +298,107 @@ def _slowwave_from_peak_cells(values, n_samples: int, var_name: str) -> np.ndarr
     return sw
 
 
+def _load_slowwave_channels(
+    pair: RecordingPair,
+    bdata: dict,
+    var_map: VarMap,
+    n_samples: int,
+) -> list[np.ndarray]:
+    """Load up to three antral slow-wave channels and reorder by user-confirmed
+    spatial order along the gastric long axis.
+
+    Three layouts are supported:
+
+    * **Three distinct variable names** (``var_map.slowwave_ch1`` ...
+      ``ch3`` resolve to different variables in the blanked or slow-wave
+      file).
+    * **One multi-channel variable referenced three times** (all three
+      slots point at the same name).  ``var_map.slowwave_ch_indices``
+      selects which column of that matrix becomes which logical channel.
+    * **Legacy single-channel** (``var_map.slowwave`` set, ch1/2/3 empty)
+      -- one-channel mode; Step 11 quality scoring degrades to "use this
+      channel as the common-mode reference, no consistency check".
+
+    Missing/bad channels are dropped with a logged warning rather than
+    aborting the recording.  The returned list has 0, 1, 2, or 3 entries
+    in spatial order (proximal -> middle -> distal).
+    """
+    # Resolve which (name, channel_idx) tuples to load.
+    requested: list[tuple[str, int]] = []
+    if var_map.slowwave_ch1 or var_map.slowwave_ch2 or var_map.slowwave_ch3:
+        indices = (var_map.slowwave_ch_indices or [0, 1, 2])
+        for i, name in enumerate((var_map.slowwave_ch1, var_map.slowwave_ch2, var_map.slowwave_ch3)):
+            if name:
+                ch = indices[i] if i < len(indices) else 0
+                requested.append((name, ch))
+    elif var_map.slowwave:  # legacy single-channel
+        requested.append((var_map.slowwave, var_map.slowwave_channel))
+
+    channels: list[np.ndarray] = []
+    for slot_idx, (name, ch_idx) in enumerate(requested):
+        sw_raw = None
+        sw_source = None
+        if _contains(bdata, name):
+            sw_raw = _resolve(bdata, name)
+            sw_source = "blanked file"
+        elif pair.slowwave_path is not None:
+            swdata = _read_any(pair.slowwave_path)
+            if _contains(swdata, name):
+                sw_raw = _resolve(swdata, name)
+                sw_source = "slow-wave file"
+        elif getattr(pair, "slowwave_paths", None):
+            # New attribute introduced for multi-file slow waves.
+            for p in pair.slowwave_paths or []:
+                if p is None:
+                    continue
+                swdata = _read_any(p)
+                if _contains(swdata, name):
+                    sw_raw = _resolve(swdata, name)
+                    sw_source = f"slow-wave file {p.name}"
+                    break
+        if sw_raw is None:
+            log.warning(
+                "Slow-wave variable '%s' (channel slot %d) not found in any candidate file "
+                "for %s; that channel will be absent.",
+                name, slot_idx + 1, pair.blanked_path.name,
+            )
+            continue
+        try:
+            sw = _coerce_slowwave(sw_raw, n_samples, name, channel=ch_idx)
+        except ValueError as e:
+            log.warning(
+                "Slow-wave channel slot %d (variable '%s') from %s rejected: %s",
+                slot_idx + 1, name, sw_source, e,
+            )
+            continue
+        if sw is not None:
+            channels.append(sw)
+
+    if not channels:
+        return channels
+
+    # Validate equal length across channels.
+    n0 = channels[0].size
+    for i, c in enumerate(channels):
+        if c.size != n0:
+            raise ValueError(
+                f"Slow-wave channels have inconsistent lengths after loading: "
+                f"channel 0 has {n0} samples but channel {i} has {c.size}. "
+                f"Reconcile the source files before re-running."
+            )
+
+    # Spatial reorder (default [1,2,3] -> no-op).  The user-confirmed
+    # spatial order is 1-based to match the ch1/ch2/ch3 naming.
+    order_1b = var_map.slowwave_spatial_order or [1, 2, 3]
+    order_0b = [i - 1 for i in order_1b if 1 <= i <= len(channels)]
+    if not order_0b:
+        order_0b = list(range(len(channels)))
+    reordered = [channels[i] for i in order_0b]
+    if order_0b != list(range(len(channels))):
+        log.info("Reordered slow-wave channels by user-confirmed spatial order: %s -> proximal..distal.", order_1b)
+    return reordered
+
+
 def _coerce_slowwave(values, n_samples: int, var_name: str, channel: int = 0) -> np.ndarray | None:
     """Turn the resolved slow-wave variable into a 1-D float32 trace.
 
@@ -428,39 +541,12 @@ def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig)
     # filter to valid range
     rpeak_samples = rpeak_samples[(rpeak_samples >= 0) & (rpeak_samples < n_samples)]
 
-    slowwave = None
-    if var_map.slowwave:
-        sw_raw: Any | None = None
-        sw_source: str | None = None
-        if _contains(bdata, var_map.slowwave):
-            sw_raw = _resolve(bdata, var_map.slowwave)
-            sw_source = "blanked file"
-        elif pair.slowwave_path is not None:
-            swdata = _read_any(pair.slowwave_path)
-            if _contains(swdata, var_map.slowwave):
-                sw_raw = _resolve(swdata, var_map.slowwave)
-                sw_source = "slow-wave file"
-        if sw_raw is None:
-            log.warning(
-                "Slow-wave variable '%s' not found in either the blanked or slow-wave "
-                "file for %s; continuing without slow-wave (Step 11 will be skipped).",
-                var_map.slowwave, pair.blanked_path.name,
-            )
-        else:
-            try:
-                slowwave = _coerce_slowwave(
-                    sw_raw, n_samples, var_map.slowwave, channel=var_map.slowwave_channel,
-                )
-            except ValueError as e:
-                # Slow-wave is optional per spec -- don't crash the whole
-                # recording on a bad variable pick.  Step 11 will be
-                # silently skipped instead.
-                log.warning(
-                    "Slow-wave from %s rejected; continuing without slow-wave for %s. "
-                    "Step 11 will be skipped.  Reason: %s",
-                    sw_source, pair.blanked_path.name, e,
-                )
-                slowwave = None
+    slowwave_channels = _load_slowwave_channels(
+        pair=pair,
+        bdata=bdata,
+        var_map=var_map,
+        n_samples=n_samples,
+    )
 
     # Stim events are optional; failure here doesn't abort the whole pair.
     stim_events: list[tuple[int, str]] | None = None
@@ -495,18 +581,18 @@ def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig)
         neural=neural_list,
         blanked_mask=blanked_masks,
         rpeak_samples=rpeak_samples.astype(np.int64),
-        slowwave=slowwave,
+        slowwave_channels=slowwave_channels,
         stim_events=stim_events,
         fs=float(fs),
         n_samples=n_samples,
     )
     log.info(
-        "Loaded %s: %d cuff(s), %d samples (%.1fs), %d R-peaks, slow-wave=%s",
+        "Loaded %s: %d cuff(s), %d samples (%.1fs), %d R-peaks, slow-wave channels=%d",
         pair.blanked_path.name,
         rec.cuff_count(),
         n_samples,
         n_samples / fs,
         rpeak_samples.size,
-        "yes" if slowwave is not None else "no",
+        len(slowwave_channels),
     )
     return rec

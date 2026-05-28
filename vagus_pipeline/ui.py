@@ -265,8 +265,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vm_rpeak = QtWidgets.QComboBox(editable=True)
         self.vm_units = QtWidgets.QComboBox()
         self.vm_units.addItems(["sample", "sec", "ms"])
-        self.vm_slowwave = QtWidgets.QComboBox(editable=True)
+        self.vm_slowwave = QtWidgets.QComboBox(editable=True)  # legacy single -- kept for back-compat
         self.vm_slowwave.addItem("")
+        # Three antral slow-wave channel dropdowns (proximal, middle, distal)
+        self.vm_slowwave_ch1 = QtWidgets.QComboBox(editable=True); self.vm_slowwave_ch1.addItem("")
+        self.vm_slowwave_ch2 = QtWidgets.QComboBox(editable=True); self.vm_slowwave_ch2.addItem("")
+        self.vm_slowwave_ch3 = QtWidgets.QComboBox(editable=True); self.vm_slowwave_ch3.addItem("")
+        # When all three ch dropdowns point to ONE variable, pick column indices.
+        self.vm_slowwave_indices = QtWidgets.QLineEdit("0,1,2")
+        self.vm_slowwave_indices.setToolTip(
+            "When all three slow-wave dropdowns reference the SAME multi-channel\n"
+            "variable, this picks which columns become ch1/ch2/ch3."
+        )
+        # Spatial order along gastric long axis (1-based; default 1,2,3 = ch1 prox, ch2 mid, ch3 dist)
+        self.vm_slowwave_spatial = QtWidgets.QLineEdit("1,2,3")
+        self.vm_slowwave_spatial.setToolTip(
+            "User-confirmed spatial order along the gastric long axis.\n"
+            "Format: comma-separated 1-based channel numbers, proximal -> distal.\n"
+            "Example: '1,2,3' keeps the as-assigned order; '3,2,1' reverses it;\n"
+            "'2,1,3' moves channel 2 to the proximal end."
+        )
         self.vm_fs = QtWidgets.QComboBox(editable=True); self.vm_fs.addItem("")
         self.vm_stim = QtWidgets.QComboBox(editable=True); self.vm_stim.addItem("")
         self.vm_stim_labels = QtWidgets.QComboBox(editable=True); self.vm_stim_labels.addItem("")
@@ -293,6 +311,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # visible text doesn't truncate ``name (shape, dtype, kind)`` to a
         # few characters in the closed state.
         for combo in (self.vm_neural, self.vm_rpeak, self.vm_slowwave,
+                      self.vm_slowwave_ch1, self.vm_slowwave_ch2, self.vm_slowwave_ch3,
                       self.vm_fs, self.vm_stim, self.vm_stim_labels):
             combo.setMinimumContentsLength(40)
             combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
@@ -303,8 +322,13 @@ class MainWindow(QtWidgets.QMainWindow):
             ("neural", self.vm_neural),
             ("rpeak_times", self.vm_rpeak),
             ("rpeak units", self.vm_units),
-            ("slowwave (optional)", self.vm_slowwave),
-            ("slowwave channel idx", self.vm_slowwave_channel),
+            ("slow-wave ch1 (proximal)", self.vm_slowwave_ch1),
+            ("slow-wave ch2 (middle)", self.vm_slowwave_ch2),
+            ("slow-wave ch3 (distal)", self.vm_slowwave_ch3),
+            ("sw col indices (if same var)", self.vm_slowwave_indices),
+            ("spatial order (1=prox..)", self.vm_slowwave_spatial),
+            ("slowwave legacy (single)", self.vm_slowwave),
+            ("slowwave channel idx (legacy)", self.vm_slowwave_channel),
             ("fs (optional)", self.vm_fs),
             ("stim_events (optional)", self.vm_stim),
             ("stim_labels (optional)", self.vm_stim_labels),
@@ -625,7 +649,13 @@ class MainWindow(QtWidgets.QMainWindow):
         combined_slow = {**bvars, **(svars or {})}
         fill(self.vm_neural, list(bvars.keys()), bvars, vm.neural)
         fill(self.vm_rpeak, list(rvars.keys()), rvars, vm.rpeak_times)
-        fill(self.vm_slowwave, list(bvars.keys()) + (list(svars.keys()) if svars else []), combined_slow, vm.slowwave)
+        sw_names = list(bvars.keys()) + (list(svars.keys()) if svars else [])
+        fill(self.vm_slowwave, sw_names, combined_slow, vm.slowwave)
+        fill(self.vm_slowwave_ch1, sw_names, combined_slow, vm.slowwave_ch1)
+        fill(self.vm_slowwave_ch2, sw_names, combined_slow, vm.slowwave_ch2)
+        fill(self.vm_slowwave_ch3, sw_names, combined_slow, vm.slowwave_ch3)
+        self.vm_slowwave_indices.setText(",".join(str(i) for i in (vm.slowwave_ch_indices or [0, 1, 2])))
+        self.vm_slowwave_spatial.setText(",".join(str(i) for i in (vm.slowwave_spatial_order or [1, 2, 3])))
         fill(self.vm_fs, list(bvars.keys()), bvars, vm.fs)
         fill(self.vm_stim, list(bvars.keys()), bvars, vm.stim_events)
         fill(self.vm_stim_labels, list(bvars.keys()), bvars, vm.stim_labels)
@@ -662,6 +692,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vm_rpeak.setEditText(d.get("rpeak_times", ""))
         self.vm_units.setCurrentText(d.get("rpeak_units", "sample"))
         self.vm_slowwave.setEditText(d.get("slowwave") or "")
+        self.vm_slowwave_ch1.setEditText(d.get("slowwave_ch1") or "")
+        self.vm_slowwave_ch2.setEditText(d.get("slowwave_ch2") or "")
+        self.vm_slowwave_ch3.setEditText(d.get("slowwave_ch3") or "")
+        self.vm_slowwave_indices.setText(",".join(str(i) for i in (d.get("slowwave_ch_indices") or [0, 1, 2])))
+        self.vm_slowwave_spatial.setText(",".join(str(i) for i in (d.get("slowwave_spatial_order") or [1, 2, 3])))
         self.vm_fs.setEditText(d.get("fs") or "")
         self.vm_stim.setEditText(d.get("stim_events") or "")
         self.vm_stim_labels.setEditText(d.get("stim_labels") or "")
@@ -695,11 +730,21 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"Couldn't parse '{idx_text}' as a comma-separated list of integers. "
                     "Example: 0,3 -- leave blank to use every channel.",
                 )
+        def _ints(txt: str, fallback: list[int]) -> list[int]:
+            try:
+                return [int(s.strip()) for s in txt.split(",") if s.strip()]
+            except ValueError:
+                return fallback
         return VarMap(
             neural=self._selected_var(self.vm_neural),
             rpeak_times=self._selected_var(self.vm_rpeak),
             rpeak_units=self.vm_units.currentText().strip() or "sample",
-            slowwave=self._selected_var(self.vm_slowwave) or None,
+            slowwave_ch1=self._selected_var(self.vm_slowwave_ch1) or None,
+            slowwave_ch2=self._selected_var(self.vm_slowwave_ch2) or None,
+            slowwave_ch3=self._selected_var(self.vm_slowwave_ch3) or None,
+            slowwave_ch_indices=_ints(self.vm_slowwave_indices.text(), [0, 1, 2]),
+            slowwave_spatial_order=_ints(self.vm_slowwave_spatial.text(), [1, 2, 3]),
+            slowwave=self._selected_var(self.vm_slowwave) or None,  # legacy
             fs=self._selected_var(self.vm_fs) or None,
             stim_events=self._selected_var(self.vm_stim) or None,
             stim_labels=self._selected_var(self.vm_stim_labels) or None,
