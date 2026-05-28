@@ -60,6 +60,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--slowwave", default=None)
+    parser.add_argument(
+        "--slowwave-channel",
+        dest="slowwave_channel",
+        type=int,
+        default=0,
+        help=(
+            "0-based index of the slow-wave channel when the slowwave variable "
+            "is a multi-channel matrix (e.g. 3xN).  Default 0."
+        ),
+    )
     parser.add_argument("--fs-var", dest="fs_var", default=None)
     parser.add_argument("--stim-events", dest="stim_events", default=None)
     parser.add_argument("--stim-labels", dest="stim_labels", default=None)
@@ -135,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         stim_labels=args.stim_labels,
         n_channels=args.n_channels,
         channel_indices=channel_indices,
+        slowwave_channel=args.slowwave_channel,
     )
     from vagus_pipeline.batch import run_batch
     from vagus_pipeline.io_discovery import (

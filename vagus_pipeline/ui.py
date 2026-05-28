@@ -271,6 +271,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vm_stim = QtWidgets.QComboBox(editable=True); self.vm_stim.addItem("")
         self.vm_stim_labels = QtWidgets.QComboBox(editable=True); self.vm_stim_labels.addItem("")
         self.vm_n_channels = QtWidgets.QSpinBox(); self.vm_n_channels.setRange(1, 64); self.vm_n_channels.setValue(1)
+        self.vm_slowwave_channel = QtWidgets.QSpinBox()
+        self.vm_slowwave_channel.setRange(0, 31)
+        self.vm_slowwave_channel.setValue(0)
+        self.vm_slowwave_channel.setToolTip(
+            "0-based index of which slow-wave channel to use when the\n"
+            "slowwave variable is a multi-channel matrix (e.g. a 3xN\n"
+            "array stacking three slow-wave time series).  Ignored when\n"
+            "the variable is already 1-D or a cell array of peak indices."
+        )
         self.vm_channel_indices = QtWidgets.QLineEdit()
         self.vm_channel_indices.setPlaceholderText("e.g. 0,3 -- leave blank to use all channels")
         self.vm_channel_indices.setToolTip(
@@ -295,6 +304,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("rpeak_times", self.vm_rpeak),
             ("rpeak units", self.vm_units),
             ("slowwave (optional)", self.vm_slowwave),
+            ("slowwave channel idx", self.vm_slowwave_channel),
             ("fs (optional)", self.vm_fs),
             ("stim_events (optional)", self.vm_stim),
             ("stim_labels (optional)", self.vm_stim_labels),
@@ -695,6 +705,7 @@ class MainWindow(QtWidgets.QMainWindow):
             stim_labels=self._selected_var(self.vm_stim_labels) or None,
             n_channels=int(self.vm_n_channels.value()),
             channel_indices=channel_indices,
+            slowwave_channel=int(self.vm_slowwave_channel.value()),
         )
 
     def _collect_config(self) -> PipelineConfig:

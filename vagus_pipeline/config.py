@@ -90,5 +90,11 @@ class VarMap:
     # Leave as ``None`` (or empty list) to use every channel in the array.
     channel_indices: list[int] | None = None
 
+    # 0-based index of the slow-wave channel to use when the slow-wave
+    # variable is a multi-channel matrix (e.g. a 3xN array stacking three
+    # slow-wave time series).  Ignored when the variable is already 1-D
+    # or a cell array of peak indices.  Default 0 = first channel.
+    slowwave_channel: int = 0
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

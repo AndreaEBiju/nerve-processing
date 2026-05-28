@@ -39,6 +39,15 @@ Step 11 (slow-wave phase tagging) accepts two input shapes:
    true phase = 0 at every detected peak.  Mathematically identical
    to running Hilbert on a real sinusoid through the same peaks.
 
+**Multi-channel slow-wave traces**: when the continuous-trace variable
+is a 2-D matrix stacking several slow-wave channels (e.g. a 3xN array
+of three slow-wave signals), pick which one to use with the
+**slowwave channel idx** spinbox in the GUI -- 0-based, default 0.
+Headless: ``--slowwave-channel 1`` (selects the second channel).
+The pipeline orients the matrix automatically (time on the longer
+axis) and slices the requested column.  Out-of-range indices error
+out with a clear "channel N is out of range; set in [0..K-1]" message.
+
 The autopop recognises both: it scores variable names containing
 ``peakloc`` / ``peaktimes`` / ``peaks_idx`` / ``sw_peaks`` as the
 peak-times path (regardless of cell-array packaging), then falls back

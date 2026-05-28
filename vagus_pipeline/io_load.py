@@ -286,7 +286,7 @@ def _slowwave_from_peak_cells(values, n_samples: int, var_name: str) -> np.ndarr
     return sw
 
 
-def _coerce_slowwave(values, n_samples: int, var_name: str) -> np.ndarray | None:
+def _coerce_slowwave(values, n_samples: int, var_name: str, channel: int = 0) -> np.ndarray | None:
     """Turn the resolved slow-wave variable into a 1-D float32 trace.
 
     Two input shapes are supported:
@@ -335,13 +335,31 @@ def _coerce_slowwave(values, n_samples: int, var_name: str) -> np.ndarray | None
             f"or a cell of peak sample indices (e.g. 'slowWavePeakLocs')."
         )
 
-    if arr.ndim > 2 or (arr.ndim == 2 and 1 not in arr.shape):
+    if arr.ndim > 2:
         raise ValueError(
             f"Slow-wave variable '{var_name}' has shape {arr.shape}; expected a 1-D "
-            f"array (or 2-D with one axis = 1) of slow-wave samples."
+            f"array, a 2-D matrix of stacked channels, or a cell of peak times."
         )
 
-    sw = arr.astype(np.float32, copy=False).ravel()
+    if arr.ndim == 2 and 1 not in arr.shape:
+        # Multi-channel slow-wave matrix.  Orient so axis 0 = time and slice
+        # the requested channel.
+        time_axis_is_0 = arr.shape[0] >= arr.shape[1]
+        view = arr if time_axis_is_0 else arr.T
+        total_chans = view.shape[1]
+        if not (0 <= channel < total_chans):
+            raise ValueError(
+                f"Slow-wave variable '{var_name}' has shape {arr.shape} ({total_chans} channels); "
+                f"slowwave_channel={channel} is out of range.  Set var_map.slowwave_channel in "
+                f"[0..{total_chans - 1}]."
+            )
+        sw = view[:, channel].astype(np.float32, copy=False).ravel()
+        log.info(
+            "Slow-wave variable '%s' is multi-channel (shape=%s); using channel %d of %d.",
+            var_name, arr.shape, channel, total_chans,
+        )
+    else:
+        sw = arr.astype(np.float32, copy=False).ravel()
 
     # Sanity-check the length.  A real slow-wave trace is sampled either
     # at the neural fs (sw.size == n_samples) or at a lower fs but still
@@ -430,7 +448,9 @@ def load_recording(pair: RecordingPair, var_map: VarMap, config: PipelineConfig)
             )
         else:
             try:
-                slowwave = _coerce_slowwave(sw_raw, n_samples, var_map.slowwave)
+                slowwave = _coerce_slowwave(
+                    sw_raw, n_samples, var_map.slowwave, channel=var_map.slowwave_channel,
+                )
             except ValueError as e:
                 # Slow-wave is optional per spec -- don't crash the whole
                 # recording on a bad variable pick.  Step 11 will be
