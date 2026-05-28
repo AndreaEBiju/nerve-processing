@@ -9,10 +9,56 @@ The scientific rationale for each step lives in the companion document
 `vagus_nerve_cuff_recording_pipeline.docx`, Section 3. This README covers
 only **how to use** the implementation; the build contract is `IMPLEMENTATION.md`.
 
-## Requirements
+## Installation
+
+The pipeline depends on a fairly heavy scientific stack (numpy, scipy, sklearn,
+spikeinterface + mountainsort5, PySide6, umap, hdbscan, etc.). Keep it isolated
+from your system Python in a virtualenv.
+
+### macOS / Linux
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/AndreaEBiju/nerve-processing.git
+cd nerve-processing
+./setup.sh                          # creates ~/.venvs/nerve-processing + .venv symlink
+source .venv/bin/activate           # in any new shell
+python run.py --smoke               # rebuilds sample data + runs pytest (~1 min)
+```
+
+`setup.sh` puts the venv outside the repo by default (at `~/.venvs/nerve-processing`)
+and drops a symlink at `./.venv` so the usual `source .venv/bin/activate` muscle
+memory still works. The reason for the indirection: when the repo lives on
+exFAT, OneDrive, Google Drive File Stream, or a network share, macOS scatters
+`._*` AppleDouble sidecar files into every directory — and pip's package
+metadata reader chokes on them. Putting the venv on the user's main APFS disk
+side-steps the problem.
+
+Override the location if you want the venv inside the repo (only safe on
+APFS / ext4 / NTFS):
+
+```bash
+VENV_DIR=.venv ./setup.sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/AndreaEBiju/nerve-processing.git
+cd nerve-processing
+.\setup.ps1                         # creates .venv\ inside the repo
+.\.venv\Scripts\Activate.ps1        # in any new shell
+python run.py --smoke
+```
+
+### Manual install (any OS)
+
+If you'd rather drive the venv yourself:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate           # (or .venv\Scripts\Activate.ps1 on Windows)
+python -m pip install --upgrade pip wheel
+python -m pip install -r requirements.txt
 ```
 
 Key dependencies (full list in `requirements.txt`):
@@ -25,6 +71,9 @@ Key dependencies (full list in `requirements.txt`):
 - `PySide6` (GUI)
 
 ## Quick start
+
+Activate the venv first (`source .venv/bin/activate` on macOS/Linux,
+`.\.venv\Scripts\Activate.ps1` on Windows).
 
 ### GUI
 

@@ -9,7 +9,8 @@ build/
 dist/
 *.egg
 
-# Virtualenvs
+# Virtualenvs (including the symlink setup.sh drops at ./.venv)
+.venv
 .venv/
 venv/
 env/
