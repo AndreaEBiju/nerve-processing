@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Generated sample dataset (regenerate with tests/make_sample_data.py)
+tests/data/
+
+# Pipeline outputs
+*_metrics.mat
+batch_pca_basis.npz
+batch_summary.csv
+batch_varmap.json
+vagus_*.log
+
+# macOS sidecar files (this volume is exFAT)
+.DS_Store
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
