@@ -21,6 +21,30 @@ do **not** touch any global Python; your system Python keeps whatever
 version it already had. If 3.12 isn't installed, the scripts error out with
 install instructions instead of silently using the wrong version.
 
+### Optional dependency: MountainSort5
+
+`mountainsort5` is the canonical sorter but its C++ dependency `isosplit6`
+does not currently ship a pre-built wheel for Windows + Python 3.12.  The
+setup scripts try to install it but **never fail the build if they can't**:
+if `mountainsort5` isn't importable, the pipeline transparently falls back
+to a deterministic KMeans + silhouette sorter and records `kmeans_fallback`
+in `metrics.provenance.sorter`.  All other steps (quality, audit, cardiac,
+respiration, slow-wave, responder, fibre-type, `.mat` output) work
+identically.
+
+To force MountainSort5 on Windows, install
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+(the "Desktop development with C++" workload) and then:
+
+```cmd
+.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
+```
+
+On macOS / Linux it usually just works — Linux/macOS wheels for `isosplit6`
+exist on PyPI.
+
+### Python 3.12 install
+
 | OS | One-liner to install Python 3.12 (only if missing) |
 | --- | --- |
 | macOS | `brew install python@3.12` (or `pyenv install 3.12 && pyenv local 3.12`) |

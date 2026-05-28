@@ -99,9 +99,32 @@ source "$VENV_DIR/bin/activate"
 echo ">>> Upgrading pip / wheel"
 python -m pip install --quiet --upgrade pip wheel
 
-echo ">>> Installing requirements (this can take several minutes the first time --"
-echo "    spikeinterface + mountainsort5 + PySide6 are big)"
+echo ">>> Installing core requirements (this can take several minutes the first time --"
+echo "    spikeinterface + PySide6 are big)"
 python -m pip install -r "$REPO_DIR/requirements.txt"
+
+echo
+echo ">>> Attempting to install optional dependency: mountainsort5"
+echo "    (skipping is fine -- the pipeline falls back to a deterministic"
+echo "     KMeans sorter automatically if mountainsort5 isn't importable)"
+if python -m pip install -r "$REPO_DIR/requirements-optional.txt"; then
+    echo ">>> mountainsort5 installed -- full spike sorting available."
+else
+    cat <<'WARN'
+!!! mountainsort5 install failed.  This is usually because the C++ dependency
+    isosplit6 has no pre-built wheel for this platform / Python version.
+    The pipeline will fall back to the KMeans sorter automatically -- you
+    can still process recordings end-to-end.
+
+    If you need full MountainSort5 sorting:
+      macOS / Linux: try installing in a Python 3.11 or 3.10 venv where
+                     isosplit6 wheels are available, or
+                     conda install -c conda-forge mountainsort5
+      Windows:       install Visual Studio Build Tools
+                     (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+                     then re-run: pip install -r requirements-optional.txt
+WARN
+fi
 
 echo
 echo ">>> Done.  Activate this venv in new shells with:"

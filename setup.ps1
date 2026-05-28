@@ -102,9 +102,30 @@ Write-Host ">>> Upgrading pip / wheel"
 & $venvPython -m pip install --quiet --upgrade pip wheel
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed (exit $LASTEXITCODE)" }
 
-Write-Host ">>> Installing requirements (this can take several minutes the first time)"
+Write-Host ">>> Installing core requirements (this can take several minutes the first time)"
 & $venvPython -m pip install -r requirements.txt
-if ($LASTEXITCODE -ne 0) { throw "requirements install failed (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "core requirements install failed (exit $LASTEXITCODE)" }
+
+Write-Host ""
+Write-Host ">>> Attempting to install optional dependency: mountainsort5"
+Write-Host "    (skipping is fine -- the pipeline falls back to a deterministic"
+Write-Host "     KMeans sorter automatically if mountainsort5 isn't importable)"
+& $venvPython -m pip install -r requirements-optional.txt
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "mountainsort5 install failed."
+    Write-Host "    This is usually because the C++ dependency isosplit6 has no"
+    Write-Host "    pre-built wheel for Windows + Python 3.12.  The pipeline will"
+    Write-Host "    fall back to the KMeans sorter automatically -- you can still"
+    Write-Host "    process recordings end-to-end."
+    Write-Host ""
+    Write-Host "    To get full MountainSort5 on Windows, install Visual Studio"
+    Write-Host "    Build Tools (the 'Desktop development with C++' workload):"
+    Write-Host "      https://visualstudio.microsoft.com/visual-cpp-build-tools/"
+    Write-Host "    then re-run:"
+    Write-Host "      $venvPython -m pip install -r requirements-optional.txt"
+} else {
+    Write-Host ">>> mountainsort5 installed -- full spike sorting available."
+}
 
 Write-Host ""
 Write-Host ">>> Done.  Activate this venv in new shells with:"

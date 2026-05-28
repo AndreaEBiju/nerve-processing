@@ -1,0 +1,14 @@
+# Optional dependencies — install if you want full MountainSort5 spike sorting.
+#
+# mountainsort5 depends on isosplit6 which contains a C++ extension.  On
+# Windows, isosplit6 does not currently ship a pre-built wheel for Python
+# 3.12, so installing it requires Microsoft Visual C++ Build Tools.  On
+# macOS and Linux there are pre-built wheels and pip install just works.
+#
+# If this install fails, the pipeline automatically falls back to a
+# deterministic KMeans+silhouette sorter (sort.py).  Clusters are still
+# produced; provenance.sorter will read "kmeans_fallback" instead of
+# "mountainsort5".  Everything downstream (quality metrics, UMAP/HDBSCAN
+# audit, cardiac/respiration/slow-wave analysis, the .mat output) keeps
+# working unchanged.
+mountainsort5>=0.5.0

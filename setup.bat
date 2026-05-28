@@ -89,9 +89,34 @@ echo ^>^>^> Upgrading pip / wheel
 "%VENV_PY%" -m pip install --quiet --upgrade pip wheel
 if errorlevel 1 exit /b 1
 
-echo ^>^>^> Installing requirements (this can take several minutes the first time)
+echo ^>^>^> Installing core requirements (this can take several minutes the first time)
 "%VENV_PY%" -m pip install -r requirements.txt
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo Error: core requirements install failed.
+    exit /b 1
+)
+
+echo.
+echo ^>^>^> Attempting to install optional dependency: mountainsort5
+echo     (skipping is fine -- the pipeline falls back to a deterministic
+echo      KMeans sorter automatically if mountainsort5 isn't importable)
+"%VENV_PY%" -m pip install -r requirements-optional.txt
+if errorlevel 1 (
+    echo.
+    echo !!! mountainsort5 install failed.
+    echo     This is usually because the C++ dependency isosplit6 has no
+    echo     pre-built wheel for Windows + Python 3.12.  The pipeline will
+    echo     fall back to the KMeans sorter automatically -- you can still
+    echo     process recordings end-to-end.
+    echo.
+    echo     To get full MountainSort5 on Windows, install Visual Studio
+    echo     Build Tools ^(the "Desktop development with C++" workload^):
+    echo       https://visualstudio.microsoft.com/visual-cpp-build-tools/
+    echo     then re-run:
+    echo       "%VENV_PY%" -m pip install -r requirements-optional.txt
+) else (
+    echo ^>^>^> mountainsort5 installed -- full spike sorting available.
+)
 
 echo.
 echo ^>^>^> Done.  Activate this venv in new shells with:
