@@ -618,41 +618,78 @@ def autopopulate_var_map(
     if not vm.slowwave:
         vm.slowwave = None
 
-    # New 3-channel slot autopopulation.  Prefer name-matched 1-D candidates
-    # from the slow-wave file (or the blanked file as fallback).  Look for
-    # tokens ch1/ch2/ch3, prox/mid/dist, _1/_2/_3 to pick deterministically.
-    def _pick_sw_slot(slot_idx_1b: int) -> str:
-        pool = slowwave_vars if slowwave_vars else blanked_vars
-        if not pool:
-            return ""
-        slot_aliases = {
-            1: ("ch1", "_1", "prox", "proximal"),
-            2: ("ch2", "_2", "mid", "middle"),
-            3: ("ch3", "_3", "dist", "distal"),
-        }
-        for tok in slot_aliases[slot_idx_1b]:
+    # New 3-channel slot autopopulation.
+    #
+    # Priority 1: a single multi-channel matrix.  Many acquisitions stack
+    # all three antral electrodes into one ``slowWaveTrace`` variable with
+    # shape (N, 3) or (3, N).  When that variable exists, autopop fills
+    # all three slots with the SAME name and sets ``slowwave_ch_indices``
+    # to ``[0, 1, 2]`` so the loader picks each column as ch1/ch2/ch3.
+    pool = slowwave_vars if slowwave_vars else blanked_vars
+    multi_chan_var = ""
+    if pool:
+        for k, v in pool.items():
+            if v.get("kind") != "array":
+                continue
+            shape = tuple(v.get("shape", ()))
+            if len(shape) != 2:
+                continue
+            # Accept any axis with size in {1, 2, 3, 4} as "channels".
+            if 3 in shape or 2 in shape:
+                # Prefer name-matched candidates.
+                if any(t in k.lower() for t in ("slow", "wave", "lfp", "trace", "filtered")):
+                    multi_chan_var = k
+                    break
+        if not multi_chan_var:
+            # No name-match; pick any 2-D array with a small "channels" axis.
             for k, v in pool.items():
-                if v.get("kind") == "array" and tok in k.lower():
-                    return k
-        # Fallback: the slot_idx-th candidate among all name-matched 1-D arrays.
-        candidates = [
-            k for k, v in pool.items()
-            if v.get("kind") == "array"
-            and any(t in k.lower() for t in ("slow", "wave", "lfp", "trace"))
-        ]
-        if slot_idx_1b - 1 < len(candidates):
-            return candidates[slot_idx_1b - 1]
-        return ""
+                shape = tuple(v.get("shape", ()))
+                if v.get("kind") == "array" and len(shape) == 2 and (3 in shape or 2 in shape):
+                    multi_chan_var = k
+                    break
 
-    vm.slowwave_ch1 = _pick_sw_slot(1) or None
-    vm.slowwave_ch2 = _pick_sw_slot(2) or None
-    vm.slowwave_ch3 = _pick_sw_slot(3) or None
-    # If two slots picked the SAME variable AND that variable is 2-D, assume
-    # it's a stacked multi-channel matrix and populate ch_indices.
-    if (vm.slowwave_ch1 and vm.slowwave_ch1 == vm.slowwave_ch2 == vm.slowwave_ch3):
-        sh = (slowwave_vars or blanked_vars).get(vm.slowwave_ch1, {}).get("shape", ())
-        if len(sh) == 2 and 3 in sh:
-            vm.slowwave_ch_indices = [0, 1, 2]
+    if multi_chan_var:
+        sh = pool[multi_chan_var]["shape"]
+        # Determine how many channels the matrix holds (the smaller axis).
+        n_ch = min(sh) if len(sh) == 2 else 1
+        if n_ch >= 3:
+            indices = [0, 1, 2]
+        elif n_ch == 2:
+            indices = [0, 1, 1]  # repeat last so consistency check still gets >= 2 inputs
+        else:
+            indices = [0, 0, 0]
+        vm.slowwave_ch1 = multi_chan_var
+        vm.slowwave_ch2 = multi_chan_var
+        vm.slowwave_ch3 = multi_chan_var if n_ch >= 3 else None
+        vm.slowwave_ch_indices = indices
+    else:
+        # Priority 2: three distinct variables.  Look for tokens
+        # ch1/ch2/ch3, prox/mid/dist, _1/_2/_3 to pick deterministically;
+        # fall back to slot-by-position over the name-matched candidates.
+        def _pick_sw_slot(slot_idx_1b: int) -> str:
+            if not pool:
+                return ""
+            slot_aliases = {
+                1: ("ch1", "_1", "prox", "proximal"),
+                2: ("ch2", "_2", "mid", "middle"),
+                3: ("ch3", "_3", "dist", "distal"),
+            }
+            for tok in slot_aliases[slot_idx_1b]:
+                for k, v in pool.items():
+                    if v.get("kind") == "array" and tok in k.lower():
+                        return k
+            candidates = [
+                k for k, v in pool.items()
+                if v.get("kind") == "array"
+                and any(t in k.lower() for t in ("slow", "wave", "lfp", "trace"))
+            ]
+            if slot_idx_1b - 1 < len(candidates):
+                return candidates[slot_idx_1b - 1]
+            return ""
+
+        vm.slowwave_ch1 = _pick_sw_slot(1) or None
+        vm.slowwave_ch2 = _pick_sw_slot(2) or None
+        vm.slowwave_ch3 = _pick_sw_slot(3) or None
 
     # fs
     fs_hits = [k for k in blanked_vars if k.lower() in ("fs", "samplerate", "sample_rate", "sr")]
