@@ -76,6 +76,7 @@ def run_batch(
     slowwave_token: str | None = DEFAULT_SLOWWAVE_TOKEN,
     mode: str = "full",
     pairs: list[RecordingPair] | None = None,
+    plots_dir: str | Path | None = None,
     progress_cb: Any | None = None,
 ) -> dict[str, Any]:
     """Run the batch on ``root_dir`` in one of three modes.
@@ -225,7 +226,9 @@ def run_batch(
                 out_path = save_mat(results, pair.dir, pair.common_stem())
                 try:
                     from .plots import save_pair_diagnostics
-                    save_pair_diagnostics(results, pair.dir, pair.common_stem())
+                    save_pair_diagnostics(
+                        results, pair.dir, pair.common_stem(), plots_root=plots_dir,
+                    )
                 except Exception as e:
                     log.warning("Diagnostic plots failed for %s: %s", pair.blanked_path.name, e)
                 row["output_path"] = str(out_path)

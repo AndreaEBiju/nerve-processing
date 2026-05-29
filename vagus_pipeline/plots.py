@@ -25,11 +25,31 @@ def save_pair_diagnostics(
     results: dict[str, Any],
     out_dir: Path | str,
     stem: str,
+    plots_root: Path | str | None = None,
 ) -> list[Path]:
-    """Render diagnostic plots for one pair's results dict.  Returns the list
-    of file paths written."""
+    """Render diagnostic plots for one pair's results dict.
+
+    Parameters
+    ----------
+    out_dir
+        Source-files directory; used as the *fallback* destination when
+        ``plots_root`` is None.
+    stem
+        Common stem for output filenames (same one assemble.save_mat uses).
+    plots_root
+        Optional user-chosen plots directory.  When set, plots for this
+        pair land in ``plots_root / <pair_dir_name> /`` so several pairs
+        with the same stem don't overwrite each other.
+    """
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if plots_root is not None:
+        # Per-pair sub-folder named after the source folder; safe across
+        # several pairs with identical common stems.
+        dest_dir = Path(plots_root) / out_dir.name
+    else:
+        dest_dir = out_dir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = dest_dir  # downstream code writes to ``out_dir``
 
     try:
         import matplotlib

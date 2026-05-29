@@ -116,7 +116,8 @@ class BatchWorker(QtCore.QObject):
     def __init__(self, root: Path, var_map: VarMap, cfg: PipelineConfig,
                  patterns: dict[str, list[str]], signature: dict[str, str | None],
                  mode: str = "full",
-                 pairs: list | None = None):
+                 pairs: list | None = None,
+                 plots_dir: Path | None = None):
         super().__init__()
         self.root = root
         self.var_map = var_map
@@ -125,6 +126,7 @@ class BatchWorker(QtCore.QObject):
         self.signature = signature
         self.mode = mode
         self.pairs = pairs
+        self.plots_dir = plots_dir
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -142,6 +144,7 @@ class BatchWorker(QtCore.QObject):
                 slowwave_token=self.signature.get("slowwave_token"),
                 mode=self.mode,
                 pairs=self.pairs,
+                plots_dir=self.plots_dir,
                 progress_cb=lambda phase, i, n: self.progress.emit(phase, i, n),
             )
             self.finished.emit(res)
@@ -358,6 +361,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cfg_widgets[name] = w
         layout.addWidget(cfg_box)
 
+        # --- Plots output folder (optional; defaults to next to source files)
+        plots_row = QtWidgets.QHBoxLayout()
+        plots_row.addWidget(QtWidgets.QLabel("Plots folder:"))
+        self.plots_dir_edit = QtWidgets.QLineEdit()
+        self.plots_dir_edit.setPlaceholderText("[next to source .mat files -- leave blank to keep that]")
+        self.plots_dir_edit.setToolTip(
+            "Optional folder for diagnostic plots (common-mode + raster, burst xcorr).\n"
+            "Leave blank to write plots next to each pair's .mat output.\n"
+            "When set, plots for each pair land in <plots-folder>/<source-folder-name>/."
+        )
+        plots_row.addWidget(self.plots_dir_edit, 1)
+        plots_browse = QtWidgets.QPushButton("Browse...")
+        plots_browse.clicked.connect(self._pick_plots_folder)
+        plots_row.addWidget(plots_browse)
+        layout.addLayout(plots_row)
+
         # --- Run mode + log
         run_row = QtWidgets.QHBoxLayout()
         run_row.addWidget(QtWidgets.QLabel("Mode:"))
@@ -401,6 +420,103 @@ class MainWindow(QtWidgets.QMainWindow):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select batch root")
         if d:
             self.root_edit.setText(d)
+
+    def _pick_plots_folder(self) -> None:
+        d = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Choose a folder for diagnostic plots", self.plots_dir_edit.text() or "",
+        )
+        if d:
+            self.plots_dir_edit.setText(d)
+
+    def _confirm_spatial_order(self, vm: VarMap) -> list[int] | None:
+        """Pop the slow-wave spatial-order confirmation dialog.  Returns the
+        confirmed 1-based order (proximal -> middle -> distal) or ``None``
+        if the user cancelled.
+
+        Per spec section 7 step 5: "the user confirms which of the three
+        assigned channels is proximal, middle, and distal ... always require
+        explicit user confirmation."  Skipped when no slow-wave channels
+        are mapped.
+        """
+        slots = [vm.slowwave_ch1, vm.slowwave_ch2, vm.slowwave_ch3]
+        if not any(slots):
+            return vm.slowwave_spatial_order or [1, 2, 3]
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Confirm slow-wave spatial order")
+        dlg.setMinimumWidth(620)
+        v = QtWidgets.QVBoxLayout(dlg)
+
+        label = QtWidgets.QLabel(
+            "<b>Confirm which slow-wave channel is proximal, middle, and distal</b><br>"
+            "along the gastric long axis.  Step 11a's propagation-lag estimate and "
+            "Step 11b's consistency check both depend on this order.<br><br>"
+            "Channels you currently have assigned:"
+        )
+        label.setWordWrap(True)
+        v.addWidget(label)
+
+        # Show what is currently assigned.
+        info = QtWidgets.QPlainTextEdit(readOnly=True)
+        info.setMaximumHeight(80)
+        info.setPlainText(
+            "\n".join(
+                f"  ch{i+1}: {slots[i] or '(empty)'}"
+                + (f"  [column {vm.slowwave_ch_indices[i]}]"
+                   if (vm.slowwave_ch_indices and i < len(vm.slowwave_ch_indices)) else "")
+                for i in range(3)
+            )
+        )
+        v.addWidget(info)
+
+        # Three dropdowns: proximal, middle, distal pick from ch1/ch2/ch3.
+        form = QtWidgets.QFormLayout()
+        labels = ["Proximal (most upstream)", "Middle (reference for prop. lag)", "Distal (most downstream)"]
+        combos: list[QtWidgets.QComboBox] = []
+        default_order = vm.slowwave_spatial_order or [1, 2, 3]
+        for i, lbl in enumerate(labels):
+            c = QtWidgets.QComboBox()
+            for j in range(3):
+                if slots[j]:
+                    c.addItem(f"ch{j+1}  ({slots[j]})", userData=j + 1)
+                else:
+                    c.addItem(f"ch{j+1}  (empty)", userData=j + 1)
+            target = default_order[i] if i < len(default_order) else (i + 1)
+            for k in range(c.count()):
+                if c.itemData(k) == target:
+                    c.setCurrentIndex(k)
+                    break
+            combos.append(c)
+            form.addRow(lbl, c)
+        v.addLayout(form)
+
+        hint = QtWidgets.QLabel(
+            "<i>If you don't know the spatial order, leave the defaults "
+            "(ch1=proximal, ch2=middle, ch3=distal).</i>"
+        )
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return None
+
+        order = [c.currentData() for c in combos]
+        # Validate: must be a permutation of {1, 2, 3} (each channel used once).
+        if sorted(order) != [1, 2, 3]:
+            QtWidgets.QMessageBox.warning(
+                self, "Spatial order invalid",
+                "Each of ch1, ch2, ch3 must appear exactly once across the "
+                "proximal / middle / distal positions.  Re-confirm and try again.",
+            )
+            return self._confirm_spatial_order(vm)
+        return order
 
     def _patterns(self) -> dict[str, list[str]]:
         def parse(s: str) -> list[str]:
@@ -798,12 +914,26 @@ class MainWindow(QtWidgets.QMainWindow):
         if not vm.neural or not vm.rpeak_times:
             QtWidgets.QMessageBox.warning(self, "Var map incomplete", "neural and rpeak_times are required.")
             return
+
+        mode = self.cmb_mode.currentText()
+        # Spec section 7 step 5: explicit user confirmation of the slow-wave
+        # spatial order.  Only prompt in full/prepass mode (resume reads
+        # the order from the saved varmap inside each checkpoint) AND only
+        # if at least one slow-wave channel slot is assigned.
+        if mode != "resume" and any([vm.slowwave_ch1, vm.slowwave_ch2, vm.slowwave_ch3]):
+            confirmed = self._confirm_spatial_order(vm)
+            if confirmed is None:
+                log.info("Spatial-order confirmation cancelled; batch aborted.")
+                return
+            vm.slowwave_spatial_order = confirmed
+            # Reflect into the UI text field so it persists in batch_varmap.json
+            self.vm_slowwave_spatial.setText(",".join(str(i) for i in confirmed))
+            log.info("Confirmed slow-wave spatial order: %s (proximal -> distal).", confirmed)
+
         cfg = self._collect_config()
         self.btn_run.setEnabled(False)
         self.progress.setValue(0)
         self.progress.setMaximum(0)  # busy
-
-        mode = self.cmb_mode.currentText()
         # In full/prepass mode, honour the per-row Include checkboxes by
         # passing only the kept pairs to the worker.  Resume mode does its
         # own checkpoint discovery and is unaffected.
@@ -823,10 +953,15 @@ class MainWindow(QtWidgets.QMainWindow):
                     "Running on %d of %d discovered pair(s) (the rest are excluded).",
                     len(kept_pairs), len(self.pairs),
                 )
+        plots_dir_text = self.plots_dir_edit.text().strip()
+        plots_dir = Path(plots_dir_text) if plots_dir_text else None
+        if plots_dir is not None:
+            log.info("Diagnostic plots will be written to: %s", plots_dir)
         self.worker = BatchWorker(
             Path(root), vm, cfg, self._patterns(), self._signature(),
             mode=mode,
             pairs=kept_pairs,
+            plots_dir=plots_dir,
         )
         self.thread = QtCore.QThread()
         self.worker.moveToThread(self.thread)

@@ -44,6 +44,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prepass", action="store_true", help="Shortcut for --mode prepass.")
     parser.add_argument("--resume", action="store_true", help="Shortcut for --mode resume.")
     parser.add_argument("--root", type=Path, help="Batch root directory (headless)")
+    parser.add_argument(
+        "--plots-dir",
+        dest="plots_dir",
+        type=Path,
+        default=None,
+        help="Optional folder where diagnostic plots land.  Each pair gets a "
+             "subfolder named after its source directory.  Default: next to the "
+             "source .mat files.",
+    )
     parser.add_argument("--neural", help="Neural variable name")
     parser.add_argument("--rpeak", help="R-peak variable name")
     parser.add_argument("--units", default="sample", choices=["sample", "sec", "ms"])
@@ -198,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         rpeak_token=rpeak_token,
         slowwave_token=slowwave_token,
         mode=mode,
+        plots_dir=args.plots_dir,
     )
     print(f"Done ({mode}). Summary:", res["summary_path"])
     return 0
