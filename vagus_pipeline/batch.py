@@ -107,7 +107,7 @@ def run_batch(
     if mode not in VALID_MODES:
         raise ValueError(f"mode must be one of {VALID_MODES}, got {mode!r}")
     if mode == "resume":
-        return _run_batch_resume(Path(root_dir), cfg, progress_cb)
+        return _run_batch_resume(Path(root_dir), cfg, progress_cb, plots_dir=plots_dir)
 
     # If the caller supplied an explicit pair list (e.g. the GUI filtered
     # out rows the user unchecked) honour it and skip discovery.
@@ -226,9 +226,26 @@ def run_batch(
                 out_path = save_mat(results, pair.dir, pair.common_stem())
                 try:
                     from .plots import save_pair_diagnostics
-                    save_pair_diagnostics(
+                    written = save_pair_diagnostics(
                         results, pair.dir, pair.common_stem(), plots_root=plots_dir,
                     )
+                    if written:
+                        log.info("Wrote %d diagnostic plot(s) for %s", len(written), pair.blanked_path.name)
+                    else:
+                        # Surface the per-cuff skip reasons so the user knows
+                        # why the plots folder is empty.
+                        reasons = []
+                        for k, cuff in enumerate(results.get("cuff", []) or []):
+                            r11a = (cuff.get("step11a") or {}).get("reason", "")
+                            r11b = (cuff.get("step11b") or {}).get("reason", "")
+                            r12 = (cuff.get("step12") or {}).get("reason", "")
+                            cause = r11a or r11b or r12 or "step11a/11b/12 produced no usable output"
+                            reasons.append(f"cuff{k+1}: {cause}")
+                        log.warning(
+                            "No diagnostic plots for %s (slow-wave / burst diagnostics gated on "
+                            "step 11+12 succeeding).  Per-cuff reason(s): %s",
+                            pair.blanked_path.name, "; ".join(reasons),
+                        )
                 except Exception as e:
                     log.warning("Diagnostic plots failed for %s: %s", pair.blanked_path.name, e)
                 row["output_path"] = str(out_path)
@@ -289,7 +306,12 @@ def run_batch(
     }
 
 
-def _run_batch_resume(root: Path, cfg: PipelineConfig, progress_cb: Any | None) -> dict[str, Any]:
+def _run_batch_resume(
+    root: Path,
+    cfg: PipelineConfig,
+    progress_cb: Any | None,
+    plots_dir: str | Path | None = None,
+) -> dict[str, Any]:
     """Resume from existing ``*_checkpoint.npz`` files at ``root``.
 
     Steps 6-14 run per cuff; the .mat output lands next to the checkpoint
@@ -386,6 +408,20 @@ def _run_batch_resume(root: Path, cfg: PipelineConfig, progress_cb: Any | None) 
             out_path = save_mat(assembled, ck_path.parent, stem)
             row["output_path"] = str(out_path)
             row["n_cuffs"] = data["n_cuffs"]
+            try:
+                from .plots import save_pair_diagnostics
+                written = save_pair_diagnostics(
+                    assembled, ck_path.parent, stem, plots_root=plots_dir,
+                )
+                if written:
+                    log.info("Resume: wrote %d diagnostic plot(s) for %s", len(written), stem)
+                else:
+                    log.info(
+                        "Resume: no diagnostic plots for %s (slow-wave/burst steps were skipped).",
+                        stem,
+                    )
+            except Exception as e:
+                log.warning("Diagnostic plots failed for %s: %s", stem, e)
             spikes_tot, clust_tot, snrs, resp_tot = 0, 0, [], 0
             for cuff in cuff_results:
                 spikes_tot += int(np.asarray(cuff["step3"]["spike_samples"]).size)
