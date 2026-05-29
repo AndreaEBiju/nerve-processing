@@ -910,12 +910,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if not root or not Path(root).exists():
             QtWidgets.QMessageBox.warning(self, "Bad root", "Pick an existing batch root.")
             return
+        mode = self.cmb_mode.currentText()
         vm = self._collect_var_map()
-        if not vm.neural or not vm.rpeak_times:
-            QtWidgets.QMessageBox.warning(self, "Var map incomplete", "neural and rpeak_times are required.")
+        # Resume mode reads the var_map from each checkpoint's stored
+        # provenance; the GUI fields are intentionally ignored.  Full and
+        # prepass modes need neural + rpeak_times in the live var_map.
+        if mode != "resume" and (not vm.neural or not vm.rpeak_times):
+            QtWidgets.QMessageBox.warning(
+                self, "Var map incomplete",
+                "neural and rpeak_times are required for full/prepass mode.\n"
+                "(Resume mode doesn't need them -- it reads the var_map from "
+                "each checkpoint file.)",
+            )
             return
 
-        mode = self.cmb_mode.currentText()
         # Spec section 7 step 5: explicit user confirmation of the slow-wave
         # spatial order.  Only prompt in full/prepass mode (resume reads
         # the order from the saved varmap inside each checkpoint) AND only
