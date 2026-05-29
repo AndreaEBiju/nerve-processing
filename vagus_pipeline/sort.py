@@ -7,8 +7,10 @@ so the pipeline can still run end-to-end; the chosen sorter is recorded in
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import sys
 import tempfile
 from typing import Tuple
 
@@ -17,6 +19,45 @@ import numpy as np
 from .config import PipelineConfig
 
 log = logging.getLogger("vagus.sort")
+
+
+@contextlib.contextmanager
+def _silence_c_stdio():
+    """Redirect OS-level stdout/stderr to /dev/null for the duration of the
+    block.  MountainSort5's isosplit5 emits its noisy ``"splitting parcel."``
+    / ``"new parcel has no points"`` / ``"Size did not change..."`` messages
+    via C ``printf``, so Python's ``contextlib.redirect_stdout`` does not
+    catch them.  Duplicating ``/dev/null`` onto the underlying file
+    descriptors does.
+
+    The originals are restored even if MS5 raises, so a real traceback still
+    surfaces to the user.
+    """
+    # Flush any pending Python-level output first so it appears before
+    # anything from MS5 (and is not lost when we redirect).
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    saved_out = os.dup(1)
+    saved_err = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os.dup2(saved_out, 1)
+        os.dup2(saved_err, 2)
+        os.close(saved_out)
+        os.close(saved_err)
+        os.close(devnull)
 
 
 def run_mountainsort(
@@ -104,7 +145,15 @@ def _run_ms5(filtered: np.ndarray, spike_samples: np.ndarray, cfg: PipelineConfi
             phase1_npca_per_channel=cfg.n_pca,
             phase1_npca_per_subdivision=cfg.n_pca,
         )
-        sorting = ms5.sorting_scheme2(recording=cached, sorting_parameters=scheme)
+        # isosplit5 (called from inside sorting_scheme2) emits a flood of
+        # benign "splitting parcel." / "new parcel has no points" /
+        # "Size did not change after splitting parcel" messages via C
+        # printf when MS5 is detecting lots of spikes.  They mean
+        # "this parcel is already unimodal" and do not affect the final
+        # clustering, so suppress them at the FD level rather than
+        # spamming the user's terminal.
+        with _silence_c_stdio():
+            sorting = ms5.sorting_scheme2(recording=cached, sorting_parameters=scheme)
         # Map sorter results back onto our spike_samples by nearest-time within ±1 ms
         labels = np.full(spike_samples.size, -1, dtype=np.int64)
         win = max(int(round(0.001 * fs)), 1)
