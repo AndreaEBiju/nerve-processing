@@ -35,7 +35,23 @@ def run_mountainsort(
         return np.zeros(0, dtype=np.int64), "none"
 
     try:
-        return _run_ms5(filtered, spike_samples, cfg), "mountainsort5"
+        labels = _run_ms5(filtered, spike_samples, cfg)
+        n_units = len({int(l) for l in labels if l >= 0})
+        if n_units == 0:
+            # MS5 ran but its internal threshold-based detector found no
+            # events above 4.5*MAD in the saved filtered signal -- this can
+            # happen when the filtered signal's spike amplitudes are
+            # comparable to the MAD (so the threshold sits above them).
+            # The prepass already detected ``spike_samples.size`` events
+            # though, and pca_feats is populated for all of them, so the
+            # KMeans fallback can still produce useful clusters.
+            log.warning(
+                "MountainSort5 returned 0 units despite %d prepass-detected spikes; "
+                "falling back to KMeans on PCA features so clusters are still produced.",
+                spike_samples.size,
+            )
+            return _kmeans_fallback(pca_feats, cfg), "kmeans_fallback"
+        return labels, "mountainsort5"
     except Exception as e:
         log.warning("MountainSort5 unavailable or failed (%s); falling back to KMeans on PCA features.", e)
         return _kmeans_fallback(pca_feats, cfg), "kmeans_fallback"
