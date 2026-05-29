@@ -223,11 +223,20 @@ def run_batch(
             else:
                 results = run_pipeline_on_pair(pair, var_map, pca_basis, cfg)
                 results["provenance"]["pca_basis_path"] = str(basis_path)
+                # The trace bundle threaded by run_pipeline_on_pair must NOT
+                # be serialised to the .mat (it would balloon the file by
+                # 100s of MB).  Pop it before save_mat and hand it directly
+                # to the diagnostic plotter.
+                extras_per_cuff = results.pop("_extras_per_cuff", None)
                 out_path = save_mat(results, pair.dir, pair.common_stem())
                 try:
                     from .plots import save_pair_diagnostics
                     written = save_pair_diagnostics(
-                        results, pair.dir, pair.common_stem(), plots_root=plots_dir,
+                        results, pair.dir, pair.common_stem(),
+                        plots_root=plots_dir,
+                        cfg=cfg,
+                        extras_per_cuff=extras_per_cuff,
+                        pair_name=pair.blanked_path.name,
                     )
                     if written:
                         log.info("Wrote %d diagnostic plot(s) for %s", len(written), pair.blanked_path.name)
@@ -408,10 +417,28 @@ def _run_batch_resume(
             out_path = save_mat(assembled, ck_path.parent, stem)
             row["output_path"] = str(out_path)
             row["n_cuffs"] = data["n_cuffs"]
+            # Build extras from the checkpoint NPZ -- it already caches
+            # filtered, blanked_mask, sigma_track, etc. per cuff, plus the
+            # global rpeak/slowwave/stim arrays.  Panels that need traces
+            # therefore render real content on the resume path.
+            extras_per_cuff = []
+            for k, cuff_data in enumerate(data["cuffs"]):
+                extras_per_cuff.append({
+                    "filtered": cuff_data.get("filtered"),
+                    "neural_raw": cuff_data.get("neural_raw"),
+                    "blanked_mask": cuff_data.get("blanked_mask"),
+                    "rpeak_samples": data.get("rpeak_samples"),
+                    "slowwave_channels": sw_channels,
+                    "stim_events": data.get("stim_events"),
+                })
             try:
                 from .plots import save_pair_diagnostics
                 written = save_pair_diagnostics(
-                    assembled, ck_path.parent, stem, plots_root=plots_dir,
+                    assembled, ck_path.parent, stem,
+                    plots_root=plots_dir,
+                    cfg=cfg,
+                    extras_per_cuff=extras_per_cuff,
+                    pair_name=stem,
                 )
                 if written:
                     log.info("Resume: wrote %d diagnostic plot(s) for %s", len(written), stem)

@@ -338,6 +338,7 @@ def run_pipeline_on_pair(
     # Pair-level slow-wave artefacts (11a + 12.detect_bursts) computed once.
     swa = run_pair_level_slowwave(rec.slowwave_channels, rec.fs, cfg)
     cuff_results: list[dict[str, Any]] = []
+    extras_per_cuff: list[dict[str, Any]] = []
     for k, (neural, mask) in enumerate(zip(rec.neural, rec.blanked_mask)):
         log.info("[%s] Cuff %d/%d", pair.blanked_path.name, k + 1, rec.cuff_count())
         prepass = run_prepass_on_cuff(neural, mask, pca_basis, cfg)
@@ -353,6 +354,17 @@ def run_pipeline_on_pair(
                 cfg=cfg,
             )
         )
+        # Per-cuff trace bundle for the diagnostic plotter (panels 1a/1b/2/3/8b/13).
+        # Stored under the ``_extras_per_cuff`` private key so batch.py can
+        # pop it before save_mat -- the trace arrays would balloon the .mat.
+        extras_per_cuff.append({
+            "filtered": prepass["filtered"],
+            "neural_raw": neural,
+            "blanked_mask": mask,
+            "rpeak_samples": rec.rpeak_samples,
+            "slowwave_channels": rec.slowwave_channels,
+            "stim_events": rec.stim_events,
+        })
 
     provenance = {
         "software_version": __version__,
@@ -371,4 +383,5 @@ def run_pipeline_on_pair(
         "fs": rec.fs,
         "n_cuffs": rec.cuff_count(),
         "cuff": cuff_results,
+        "_extras_per_cuff": extras_per_cuff,
     }
