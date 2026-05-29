@@ -63,7 +63,34 @@ def _run_ms5(filtered: np.ndarray, spike_samples: np.ndarray, cfg: PipelineConfi
     from mountainsort5.util import create_cached_recording  # type: ignore
 
     fs = cfg.fs
-    rec = si.NumpyRecording(traces_list=[filtered.astype(np.float32).reshape(-1, 1)], sampling_frequency=fs)
+
+    # MS5 / SpikeInterface compute noise_levels from the input signal and
+    # then use detect_threshold * noise_levels as the actual sample-space
+    # threshold.  In practice that pipeline can give inconsistent (or zero)
+    # detections when the input scale is far from the conventional
+    # microvolt-ish range (e.g. raw volts, like the user's filtered signal
+    # at ~1e-4) or when there's enough quantization noise to throw off
+    # noise_levels.  Pre-normalising the trace so its MAD-based sigma is
+    # exactly 1.0 makes ``cfg.threshold_sigma * noise_levels`` collapse to
+    # the intuitive "threshold = cfg.threshold_sigma * sigma" rule
+    # regardless of the original units.
+    f64 = filtered.astype(np.float64)
+    med = float(np.median(f64))
+    mad = float(np.median(np.abs(f64 - med)))
+    sigma = mad / 0.6745 if mad > 0 else float(np.std(f64) + 1e-12)
+    if sigma > 0 and np.isfinite(sigma):
+        scale = 1.0 / sigma
+        filtered_norm = ((f64 - med) * scale).astype(np.float32)
+        log.info(
+            "MS5: normalised filtered trace (median=%.3g, MAD-sigma=%.3g -> scale=%.3g) "
+            "so detect_threshold=%.2f is interpreted as %.2f * sigma.",
+            med, sigma, scale, cfg.threshold_sigma, cfg.threshold_sigma,
+        )
+    else:
+        filtered_norm = filtered.astype(np.float32)
+        log.warning("MS5: filtered trace has zero/non-finite sigma; passing unscaled.")
+
+    rec = si.NumpyRecording(traces_list=[filtered_norm.reshape(-1, 1)], sampling_frequency=fs)
     rec.set_channel_locations(np.array([[0.0, 0.0]]))
     with tempfile.TemporaryDirectory() as td:
         cached = create_cached_recording(rec, folder=os.path.join(td, "rec_cache"))
